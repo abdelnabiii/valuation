@@ -187,6 +187,8 @@ async function seedDemo() {
     await db.insert(s.intakeSection).values({ engagementId: E, sectionKey: k, data: v, completionPct: 100, updatedBy: "seed" });
 
   // Illustrative placeholders (NOT market data) so the demo calculates end to end.
+  // Exchange rates are never seeded: the USD/EGP rate must be looked up live
+  // ("Fetch macro data" or entered with a dated source) on the day of use.
   const [ph] = await db
     .insert(s.source)
     .values({
@@ -212,7 +214,6 @@ async function seedDemo() {
     ["macro.egp_inflation_y5", 0.07, "pct"],
     ["macro.egp_inflation_lt", 0.07, "pct"],
     ["macro.usd_inflation", 0.02, "pct"],
-    ["macro.fx_usd_egp", 48, "egp_per_usd"],
     ["macro.tax_rate", 0.225, "pct"],
     ["macro.vat_rate", 0.14, "pct"],
     ["dr.size_premium", 0.03, "pct"],
