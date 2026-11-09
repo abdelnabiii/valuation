@@ -1,3 +1,4 @@
+// Env: DATABASE_URL, SESSION_SECRET, BLOB_READ_WRITE_TOKEN, ANTHROPIC_API_KEY (see README).
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
