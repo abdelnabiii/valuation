@@ -84,8 +84,10 @@ export function unitEconomics(ctx: Ctx): UnitEconomicsResult {
     const annualisedFourWall = u.ttmMonths > 0 ? (fourWallEbitda * 12) / u.ttmMonths : 0;
     let observedRampY1: number | null = null;
     const m = [...u.monthlyRevenue].sort((a, b) => a.monthIndex - b.monthIndex);
-    const first12 = m.filter((x) => x.monthIndex >= 1 && x.monthIndex <= 12);
-    if (first12.length === 12 && m.length >= 15) {
+    // Requires a contiguous series starting at month 1 (mirrors the Excel formula).
+    const contiguous = m.every((x, i) => x.monthIndex === i + 1);
+    const first12 = m.slice(0, 12);
+    if (contiguous && m.length >= 15) {
       const last3 = m.slice(-3);
       const avgLast = sum(last3.map((x) => x.amount)) / 3;
       if (avgLast > 0) observedRampY1 = sum(first12.map((x) => x.amount)) / 12 / avgLast;
