@@ -4,6 +4,7 @@ import { comparable, db, source } from "@/lib/db";
 import { sourceOptions } from "@/lib/sources";
 import { proposalsFor } from "@/lib/proposals";
 import { hasClaude } from "@/lib/claude";
+import { researchStatus } from "@/lib/research-status";
 import ComparablesEditor from "@/components/admin/ComparablesEditor";
 import ResearchPanel from "@/components/admin/ResearchPanel";
 
@@ -15,7 +16,7 @@ export default async function Comparables({ params }: { params: Promise<{ id: st
   const n = (v: string | null) => (v === null ? null : Number(v));
   return (
     <div className="stack">
-      <ResearchPanel engagementId={id} kind="comparables" proposals={proposals} enabled={hasClaude()} />
+      <ResearchPanel engagementId={id} kind="comparables" proposals={proposals} enabled={hasClaude()} status={await researchStatus(id, "comparables")} />
       <ComparablesEditor
         engagementId={id}
         sources={sources}

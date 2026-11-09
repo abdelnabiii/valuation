@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
+import { after } from "next/server";
 import { and, eq, isNull } from "drizzle-orm";
 import { CATALOGUE_BY_KEY } from "@valuation/engine";
 import { requireAdmin, changePassword } from "@/lib/auth";
@@ -232,13 +233,19 @@ export async function rejectProposal(id: string) {
 
 export async function runResearch(engagementId: string, kind: "macro" | "comparables") {
   const me = await requireAdmin();
-  try {
-    const r = kind === "macro" ? await researchMacro(engagementId, me.email) : await researchComparables(engagementId, me.email);
-    revalidatePath(path(engagementId), "layout");
-    return { ok: true as const, ...r };
-  } catch (e) {
-    return { ok: false as const, error: (e as Error).message };
-  }
+  const entity = kind === "macro" ? "macro" : "comparables";
+  await audit({ engagementId, actor: me.email, action: "research_started", entity });
+  // Web research takes several minutes: run it after the response is sent.
+  after(async () => {
+    try {
+      if (kind === "macro") await researchMacro(engagementId, me.email);
+      else await researchComparables(engagementId, me.email);
+    } catch (e) {
+      await audit({ engagementId, actor: me.email, action: "research", entity, newValue: { error: (e as Error).message } });
+    }
+  });
+  revalidatePath(path(engagementId), "layout");
+  return { ok: true as const };
 }
 
 /* ---------------- Comparables ---------------- */

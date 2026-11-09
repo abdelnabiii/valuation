@@ -32,7 +32,7 @@ export async function searchTurn(system: string, prompt: string, maxUses = 12): 
       max_tokens: 32000,
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
-      output_config: { effort: "medium" },
+      output_config: { effort: "low" },
       system,
       tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }],
       messages,

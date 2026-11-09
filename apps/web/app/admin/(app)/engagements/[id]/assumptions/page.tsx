@@ -4,6 +4,7 @@ import { preview } from "@/lib/runs";
 import { sourceOptions } from "@/lib/sources";
 import { proposalsFor } from "@/lib/proposals";
 import { hasClaude } from "@/lib/claude";
+import { researchStatus } from "@/lib/research-status";
 import { SECTION_LABELS } from "@valuation/exports";
 import AssumptionTable from "@/components/admin/AssumptionTable";
 import ResearchPanel from "@/components/admin/ResearchPanel";
@@ -19,7 +20,7 @@ export default async function Assumptions({ params }: { params: Promise<{ id: st
   const missing = result.assumptions.filter((a) => a.value === null).length;
   return (
     <div className="stack">
-      <ResearchPanel engagementId={id} kind="macro" proposals={proposals} enabled={hasClaude()} />
+      <ResearchPanel engagementId={id} kind="macro" proposals={proposals} enabled={hasClaude()} status={await researchStatus(id, "macro")} />
       <p className="muted">
         {missing} without a value · {unconfirmed} unconfirmed · {stale} older than 30 days. Market data must cite a dated source; system defaults stay open items until you confirm them.
       </p>
