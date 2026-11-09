@@ -340,6 +340,7 @@ export const assumption = pgTable(
     sourceId: uuid("source_id").references(() => source.id, { onDelete: "set null" }),
     asOfDate: date("as_of_date"),
     isPlaceholder: boolean("is_placeholder").notNull().default(false),
+    confirmed: boolean("confirmed").notNull().default(false),
     rationale: text("rationale"),
     updatedBy: text("updated_by").notNull().default("system"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -428,4 +429,22 @@ export const auditLog = pgTable(
     at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("audit_eng_idx").on(t.engagementId, t.at)],
+);
+
+/** Values found by live research or extraction, waiting for the advisor to accept. */
+export const researchProposal = pgTable(
+  "research_proposal",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    engagementId: uuid("engagement_id")
+      .notNull()
+      .references(() => engagement.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // macro | comparable
+    targetKey: text("target_key"), // assumption key for macro proposals
+    payload: jsonb("payload").notNull(),
+    sourceId: uuid("source_id").references(() => source.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"), // pending | accepted | rejected
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("rp_eng_idx").on(t.engagementId, t.status)],
 );

@@ -1,0 +1,1 @@
+ALTER TABLE "assumption" ADD COLUMN "confirmed" boolean DEFAULT false NOT NULL;
