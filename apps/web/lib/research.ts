@@ -120,7 +120,7 @@ export async function researchMacro(engagementId: string, actor: string, keys = 
       return searchTurn(
         SYSTEM,
         `Valuation date: ${vd}. Market: Egypt. Find the most recent published value, on or before the valuation date where possible, for each item:\n${wanted}\n\nNotes: EGP inflation forecasts for years 1-5 should come from a published forecast (e.g. IMF World Economic Outlook / Article IV, central bank or ministry projections) and say which calendar year each figure refers to. Long-term EGP inflation: the latest year of such a forecast. Equity risk premium and Egypt country risk premium: Damodaran's current dataset. Size premium: a published size-premium study for the smallest size decile. Write one paragraph per item with value, URL, title, publisher, date and a verbatim quote.`,
-        6,
+        10,
       );
     }),
   );
@@ -159,7 +159,7 @@ export async function researchComparables(engagementId: string, actor: string) {
     `Find transactions (last 5 years) involving coffee shop, café, bakery-café or quick-service F&B businesses in Egypt, the GCC, North Africa and other emerging markets, where a source states EV/EBITDA, EV/revenue or the deal value with revenue or EBITDA. For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
     `Find listed F&B and restaurant companies on EGX and regional exchanges (and, if few, listed coffee chains in emerging markets) with current EV/EBITDA and EV/revenue as stated by a data source. For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
   ];
-  const turns = await Promise.all(prompts.map((pr) => searchTurn(SYSTEM, pr, 8)));
+  const turns = await Promise.all(prompts.map((pr) => searchTurn(SYSTEM, pr, 12)));
   const text = turns.map((t) => t.text).join("\n\n");
   const hits = turns.flatMap((t) => t.hits);
   const out = await structure(CompOut, text, "Convert the notes into one item per comparable. Compute a multiple only when the notes give both the value and the earnings figure explicitly.");
