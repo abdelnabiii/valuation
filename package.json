@@ -1,0 +1,14 @@
+{
+  "name": "valuation",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @valuation/db generate",
+    "db:migrate": "pnpm --filter @valuation/db migrate",
+    "db:seed": "pnpm --filter @valuation/db seed"
+  }
+}
