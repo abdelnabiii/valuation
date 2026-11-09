@@ -1,3 +1,4 @@
+export const maxDuration = 300;
 import { CATALOGUE } from "@valuation/engine";
 import { preview } from "@/lib/runs";
 import { sourceOptions } from "@/lib/sources";

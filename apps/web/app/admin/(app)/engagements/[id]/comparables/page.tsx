@@ -1,3 +1,4 @@
+export const maxDuration = 300;
 import { eq } from "drizzle-orm";
 import { comparable, db, source } from "@/lib/db";
 import { sourceOptions } from "@/lib/sources";

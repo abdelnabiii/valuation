@@ -1,3 +1,4 @@
+export const maxDuration = 300;
 import { desc, eq, inArray } from "drizzle-orm";
 import { db, extractionRow, unit, upload } from "@/lib/db";
 import ExtractionReview from "@/components/admin/ExtractionReview";
