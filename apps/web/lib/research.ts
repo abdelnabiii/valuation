@@ -106,11 +106,26 @@ async function saveSource(engagementId: string, kind: "macro" | "transaction" | 
 export async function researchMacro(engagementId: string, actor: string, keys = MACRO_KEYS) {
   const [e] = await db().select().from(engagement).where(eq(engagement.id, engagementId));
   const vd = e?.valuationDate ?? new Date().toISOString().slice(0, 10);
-  const wanted = CATALOGUE.filter((c) => keys.includes(c.key)).map((c) => `- ${c.key}: ${c.label}`).join("\n");
-  const { text, hits } = await searchTurn(
-    SYSTEM,
-    `Valuation date: ${vd}. Market: Egypt. Find the most recent published value, on or before the valuation date where possible, for each item:\n${wanted}\n\nNotes: EGP inflation forecasts for years 1-5 should come from a published forecast (e.g. IMF World Economic Outlook / Article IV, central bank or ministry projections) and say which calendar year each figure refers to. Long-term EGP inflation: the latest year of such a forecast. Equity risk premium and Egypt country risk premium: Damodaran's current dataset. Size premium: a published size-premium study for the smallest size decile. Write one paragraph per item with value, URL, title, publisher, date and a verbatim quote.`,
+  const groups = [
+    ["macro.us_rf", "macro.usd_inflation", "macro.erp", "macro.crp_egypt", "dr.size_premium"],
+    ["macro.egp_tbill", "macro.fx_usd_egp", "macro.tax_rate", "macro.vat_rate"],
+    ["macro.egp_inflation_y1", "macro.egp_inflation_y2", "macro.egp_inflation_y3", "macro.egp_inflation_y4", "macro.egp_inflation_y5", "macro.egp_inflation_lt"],
+  ]
+    .map((g) => g.filter((k) => keys.includes(k)))
+    .filter((g) => g.length);
+  // Parallel searches keep the request well inside the function time limit.
+  const turns = await Promise.all(
+    groups.map((g) => {
+      const wanted = CATALOGUE.filter((c) => g.includes(c.key)).map((c) => `- ${c.key}: ${c.label}`).join("\n");
+      return searchTurn(
+        SYSTEM,
+        `Valuation date: ${vd}. Market: Egypt. Find the most recent published value, on or before the valuation date where possible, for each item:\n${wanted}\n\nNotes: EGP inflation forecasts for years 1-5 should come from a published forecast (e.g. IMF World Economic Outlook / Article IV, central bank or ministry projections) and say which calendar year each figure refers to. Long-term EGP inflation: the latest year of such a forecast. Equity risk premium and Egypt country risk premium: Damodaran's current dataset. Size premium: a published size-premium study for the smallest size decile. Write one paragraph per item with value, URL, title, publisher, date and a verbatim quote.`,
+        8,
+      );
+    }),
   );
+  const text = turns.map((t) => t.text).join("\n\n");
+  const hits = turns.flatMap((t) => t.hits);
   const out = await structure(MacroOut, text, `Convert the notes into one item per key. Keys: ${keys.join(", ")}.`);
   let created = 0;
   const rejected: string[] = [];
@@ -140,14 +155,13 @@ export async function researchMacro(engagementId: string, actor: string, keys = 
 }
 
 export async function researchComparables(engagementId: string, actor: string) {
-  const { text, hits } = await searchTurn(
-    SYSTEM,
-    `Find valuation multiples for comparables to a specialty coffee / café chain in Egypt:
-1. Transactions (last 5 years) involving coffee shop, café, bakery-café or quick-service F&B businesses in Egypt, the GCC, North Africa and other emerging markets, where a source states EV/EBITDA, EV/revenue or the deal value with revenue or EBITDA.
-2. Listed F&B and restaurant companies on EGX and regional exchanges (and, if few, listed coffee chains in emerging markets) with current EV/EBITDA and EV/revenue as stated by a data source.
-For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
-    15,
-  );
+  const prompts = [
+    `Find transactions (last 5 years) involving coffee shop, café, bakery-café or quick-service F&B businesses in Egypt, the GCC, North Africa and other emerging markets, where a source states EV/EBITDA, EV/revenue or the deal value with revenue or EBITDA. For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
+    `Find listed F&B and restaurant companies on EGX and regional exchanges (and, if few, listed coffee chains in emerging markets) with current EV/EBITDA and EV/revenue as stated by a data source. For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
+  ];
+  const turns = await Promise.all(prompts.map((pr) => searchTurn(SYSTEM, pr, 10)));
+  const text = turns.map((t) => t.text).join("\n\n");
+  const hits = turns.flatMap((t) => t.hits);
   const out = await structure(CompOut, text, "Convert the notes into one item per comparable. Compute a multiple only when the notes give both the value and the earnings figure explicitly.");
   let created = 0;
   const rejected: string[] = [];
