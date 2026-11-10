@@ -2,6 +2,9 @@
 
 All amounts are nominal EGP unless stated. Percentages are decimals in the engine. Every formula below is implemented once in `packages/engine/src` and written cell-for-cell into the Excel model (`packages/exports/src/excel/workbook.ts`); a test recalculates the workbook in LibreOffice and compares it with the engine to the cent.
 
+## Basis of value (in the report)
+The report's Methodology section defines the standard of value (fair market value, investment value or IFRS 13 fair value), the premise (going concern, orderly or forced liquidation) and the basis (control or minority) set on the engagement, and explains how they affect the number: the asset floor's role, control-style normalization, the marketability and company-specific discounts actually applied, that the range is for 100% of the equity, and that USD figures are translations. On a minority basis it states that no separate discount for lack of control is applied by the model.
+
 ## 1. Normalization (trailing twelve months)
 - Revenue = sum of unit revenue by channel. Reported EBITDA = revenue − unit costs − head-office costs.
 - SDE = reported EBITDA + add-backs (owner pay, one-offs, related-party excess, non-operating).

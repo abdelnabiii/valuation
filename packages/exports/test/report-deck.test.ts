@@ -80,6 +80,9 @@ describe("report", () => {
     expect(text).toContain(ctx.branding.disclaimerText);
     expect(text).toContain("not a certified valuation by a licensed valuer");
     expect(text).toContain("Open Items");
+    expect(text).toContain("Basis of value");
+    expect(text).toContain("willing and able buyer");
+    expect(text).toContain("100% of the equity");
     expect(text).toContain(fmtMoney(ctx.result.reconciliation.roundedMid)); // "EGP 13.4m"
     expect(text).toContain(fmtAmount(ctx.result.reconciliation.roundedMid)); // "13,400,000"
     expect(text).not.toContain("PROVISIONAL");
@@ -143,5 +146,14 @@ describe("deck", () => {
     const bytes = await renderDeck(ctx);
     preview("deck-provisional.pptx", bytes);
     expect(await slidesText(bytes)).toContain("PROVISIONAL");
+  });
+
+  it("explains a minority basis without claiming a discount the model does not apply", async () => {
+    const { basisOfValueBlocks } = await import("../src/report/basis");
+    const ctx = sampleContext();
+    ctx.engagement.basis = "minority";
+    const text = JSON.stringify(basisOfValueBlocks(ctx));
+    expect(text).toContain("does not apply a separate discount for lack of control");
+    expect(text).toContain("Minority (basis)");
   });
 });

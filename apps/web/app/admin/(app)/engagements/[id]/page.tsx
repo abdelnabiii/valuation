@@ -72,8 +72,22 @@ export default async function Overview({ params }: { params: Promise<{ id: strin
               <div className="field"><label htmlFor="cross_check_currency">Cross-check currency</label><input id="cross_check_currency" name="cross_check_currency" defaultValue={e!.crossCheckCurrency} /></div>
               <div className="field"><label htmlFor="language">Language</label><input id="language" name="language" defaultValue={e!.language} /></div>
               <div className="field"><label htmlFor="market">Market</label><input id="market" name="market" defaultValue={e!.market} /></div>
-              <input type="hidden" name="standard_of_value" value={e!.standardOfValue} />
-              <input type="hidden" name="premise" value={e!.premise} />
+              <div className="field">
+                <label htmlFor="standard_of_value">Standard of value</label>
+                <select id="standard_of_value" name="standard_of_value" defaultValue={e!.standardOfValue}>
+                  <option value="fair_market_value">Fair market value</option>
+                  <option value="investment_value">Investment value</option>
+                  <option value="fair_value">Fair value (IFRS 13)</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="premise">Premise of value</label>
+                <select id="premise" name="premise" defaultValue={e!.premise}>
+                  <option value="going_concern">Going concern</option>
+                  <option value="orderly_liquidation">Orderly liquidation</option>
+                  <option value="forced_liquidation">Forced liquidation</option>
+                </select>
+              </div>
             </div>
             <button className="btn" type="submit">Save settings</button>
           </form>

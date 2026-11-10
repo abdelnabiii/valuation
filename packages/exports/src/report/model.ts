@@ -10,6 +10,7 @@
 import { CATALOGUE_BY_KEY, CHANNELS, type EngineResult, type SensitivityGrid } from "@valuation/engine";
 import { footballFieldSvg, heatmapSvg, paletteFromBranding, type ChartPalette, type SvgChart } from "../charts";
 import { SECTION_LABELS, type ExportContext } from "../context";
+import { basisOfValueBlocks } from "./basis";
 import {
   ADDBACK_LABELS,
   CHANNEL_LABELS,
@@ -486,6 +487,7 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
         },
       ],
     });
+    b.push(...basisOfValueBlocks(ctx));
     b.push({ type: "heading", level: 3, text: "The nine steps" });
     b.push({
       type: "bullets",
