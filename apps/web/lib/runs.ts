@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { runValuation, type EngineInput, type EngineResult } from "@valuation/engine";
-import { buildWorkbook, renderDeck, renderReportDocx, renderReportPdf, type ExportContext } from "@valuation/exports";
+import { buildWorkbook, normalizeResult, renderDeck, renderReportDocx, renderReportPdf, type ExportContext } from "@valuation/exports";
 import { auditLog, client, db, engagement, exportFile, source, valuationRun } from "./db";
 import { buildEngineInput } from "./engine-input";
 import { audit } from "./audit";
@@ -68,7 +68,7 @@ export async function exportContext(runId: string): Promise<ExportContext> {
   if (!row) throw new Error("Run not found");
   const { r, e, c } = row;
   const input = r.inputsSnapshot as EngineInput;
-  const result = r.result as EngineResult;
+  const result = normalizeResult(r.result as EngineResult, e.profileKey);
   const b = await getBranding();
   const state = await loadIntake(e.id);
   const ids = new Set<string>([
