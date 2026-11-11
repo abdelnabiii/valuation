@@ -1,4 +1,5 @@
-import { CATALOGUE } from "./catalogue";
+import { CATALOGUE, CATALOGUE_BY_KEY, SCORECARD_FACTORS, isRelevant } from "./catalogue";
+import { EQUITY_METHODS, METHOD_LABELS, weightKey, type MethodKey } from "./profiles";
 import type { Ctx } from "./context";
 import { runForecast, type ForecastParams } from "./forecast";
 import { median, monthsBetween, percentileInc, roundTo, safeDiv, sum } from "./math";
@@ -13,6 +14,8 @@ import {
   type CostLine,
   type DcfResult,
   type DiscountRateResult,
+  type EarlyStageResult,
+  type NavResult,
   type MethodRange,
   type MultipleStats,
   type MultiplesResult,
@@ -225,7 +228,7 @@ export function forecastParams(
     baseRevenue: norm.revenue,
     baseMargin: norm.normalizedMargin,
     inflation: inflationPath(ctx),
-    sssReal: ctx.n(`dcf.${s}.sss_real`),
+    growthReal: growthPath(ctx, s),
     marginDelta: ctx.n(`dcf.${s}.margin_delta`),
     marginShift: 0,
     newUnits: [1, 2, 3, 4, 5].map((y) => ctx.n(`dcf.${s}.new_units_y${y}`, derivedNewUnits(ctx, s, y))),
@@ -244,6 +247,33 @@ export function forecastParams(
     exitMultiple,
     tvWeightGordon: ctx.n("dcf.tv_weight_gordon"),
   };
+}
+
+/**
+ * Real growth of existing revenue per year. Multi-site: same-store growth
+ * (one rate). Other models: per-year rates, derived from the client's planned
+ * nominal growth (deflated by EGP inflation) where given.
+ */
+export function growthPath(ctx: Ctx, s: Scenario): number[] {
+  if (ctx.profile.model === "units") {
+    const g = ctx.n(`dcf.${s}.sss_real`);
+    return [g, g, g, g, g];
+  }
+  const infl = inflationPath(ctx);
+  const plan = ctx.input.growthPlan.revenueGrowthNominal ?? [];
+  return [1, 2, 3, 4, 5].map((y) => {
+    const nom = plan[y - 1];
+    let derived: number | null = null;
+    if (nom !== null && nom !== undefined && Number.isFinite(nom) && ctx.has(`macro.egp_inflation_y${y}`)) {
+      const real = (1 + nom) / (1 + infl[y - 1]!) - 1;
+      derived = s === "base" ? real : s === "upside" ? real + 0.02 : real - 0.04;
+    }
+    return ctx.n(
+      `dcf.${s}.growth_y${y}`,
+      derived,
+      derived !== null ? `Client plan ${(nom! * 100).toFixed(1)}% nominal, less EGP inflation${s === "base" ? "" : s === "upside" ? ", plus 2pp" : ", less 4pp"}` : undefined,
+    );
+  });
 }
 
 function derivedNewUnits(ctx: Ctx, s: Scenario, y: number): number {
@@ -472,6 +502,14 @@ export function suggestFx(importedShare: number | null): number | null {
   return 0;
 }
 
+export function suggestConcentration(share: number | null | undefined): number | null {
+  if (share === null || share === undefined || !Number.isFinite(share)) return null;
+  if (share > 0.5) return 0.075;
+  if (share > 0.3) return 0.05;
+  if (share > 0.15) return 0.025;
+  return 0;
+}
+
 export function adjustments(ctx: Ctx, norm: NormalizationResult): AdjustmentsResult {
   const ops = ctx.input.operations;
   const units = ctx.input.units;
@@ -522,6 +560,24 @@ export function adjustments(ctx: Ctx, norm: NormalizationResult): AdjustmentsRes
       rationale: ops.importedCogsShare === null ? "Imported share of COGS not provided." : `Imported inputs are ${pct(ops.importedCogsShare)} of COGS.`,
     },
   ];
+  const conc = ops.topCustomerShare ?? null;
+  const cS = suggestConcentration(conc);
+  rows.push({
+    key: "adj.concentration",
+    label: "Customer concentration",
+    pct: ctx.n("adj.concentration", cS),
+    suggestedPct: cS ?? 0,
+    rationale: conc === null ? "Share of revenue from the largest customer not provided." : `Largest customer is ${pct(conc)} of revenue.`,
+  });
+  const model = ctx.profile.model;
+  const keep = rows.filter((r) => isRelevant(r.key, model, ctx.profile.methods));
+  const deliveryRow = keep.find((r) => r.key === "adj.delivery");
+  if (deliveryRow) {
+    deliveryRow.label = ctx.profile.platformLabel;
+    deliveryRow.rationale = `${ctx.profile.channelLabels.delivery} are ${pct(deliveryShare)} of TTM revenue.`;
+  }
+  rows.length = 0;
+  rows.push(...keep);
   const combinedFactor = rows.reduce((f, r) => f * (1 - r.pct), 1);
   return { rows, combinedFactor, combinedDiscount: 1 - combinedFactor };
 }
@@ -563,6 +619,74 @@ export function bridge(ctx: Ctx): BridgeResult {
 /* 5 + 8. Reconciliation (young-company weighting inside)              */
 /* ------------------------------------------------------------------ */
 
+export function nav(ctx: Ctx, norm: NormalizationResult): NavResult {
+  const assets = ctx.input.navAssets ?? [];
+  const rows = assets.map((x) => ({ name: x.name, kind: x.kind, marketValue: x.marketValue, bookValue: x.bookValue, sourceNote: x.sourceNote }));
+  const missing = rows.filter((x) => x.marketValue === null || !Number.isFinite(x.marketValue)).map((x) => x.name);
+  const totalMarketValue = sum(rows.map((x) => (x.marketValue !== null && Number.isFinite(x.marketValue) ? x.marketValue : 0)));
+  const noi = norm.normalizedEbitda;
+  const capRate = ctx.a("nav.cap_rate");
+  const spread = ctx.n("nav.cap_rate_spread");
+  const icOk = capRate !== null && capRate > 0 && capRate - spread > 0 && noi > 0;
+  return {
+    available: rows.length > 0 && totalMarketValue > 0,
+    rows,
+    totalMarketValue,
+    missing,
+    incomeCap: {
+      available: icOk,
+      noi,
+      capRate,
+      spread,
+      low: icOk ? noi / (capRate! + spread) : 0,
+      mid: icOk ? noi / capRate! : 0,
+      high: icOk ? noi / (capRate! - spread) : 0,
+    },
+  };
+}
+
+export function earlyStage(ctx: Ctx, m: MultiplesResult): EarlyStageResult {
+  const es = ctx.input.earlyStage;
+  const rev = m.stats.find((x) => x.metric === "ev_revenue");
+  const exitMultiple = ctx.a("vc.exit_multiple", rev?.median ?? null, "Median EV/Revenue of included comparables");
+  const exitRevenue = ctx.n("vc.exit_revenue", es?.exitRevenue ?? null, "Client plan");
+  const exitYears = ctx.n("vc.exit_years", es?.exitYears ?? null, "Client plan");
+  const targetReturn = ctx.n("vc.target_return");
+  const retention = ctx.n("vc.retention");
+  const lowM = rev?.q1 ?? exitMultiple;
+  const highM = rev?.q3 ?? exitMultiple;
+  const vcOk = exitRevenue > 0 && exitMultiple !== null && exitMultiple > 0 && exitYears > 0;
+  const df = 1 / (1 + targetReturn) ** exitYears;
+  const scBase = ctx.a("sc.base_premoney");
+  const factors = SCORECARD_FACTORS.map((k) => {
+    const weight = ctx.n(`sc.w_${k}`);
+    const score = ctx.n(`sc.s_${k}`);
+    return { key: k, label: CATALOGUE_BY_KEY[`sc.w_${k}`]!.label.replace("Scorecard weight: ", ""), weight, score, product: weight * score };
+  });
+  const multiplier = sum(factors.map((f) => f.product));
+  const post = ctx.a("round.post_money", es?.lastRoundPostMoney ?? null, "Latest priced round (client data)");
+  const adj = ctx.n("round.adjustment");
+  return {
+    vc: {
+      available: vcOk,
+      exitRevenue,
+      exitYears,
+      exitMultipleLow: lowM,
+      exitMultiple,
+      exitMultipleHigh: highM,
+      targetReturn,
+      retention,
+      exitValue: vcOk ? exitRevenue * exitMultiple! : 0,
+      discountFactor: df,
+      low: vcOk ? vcValue(exitRevenue, lowM!, retention, targetReturn, exitYears) : 0,
+      mid: vcOk ? vcValue(exitRevenue, exitMultiple!, retention, targetReturn, exitYears) : 0,
+      high: vcOk ? vcValue(exitRevenue, highM!, retention, targetReturn, exitYears) : 0,
+    },
+    scorecard: { available: scBase !== null && scBase > 0, base: scBase, factors, multiplier, value: scBase !== null && scBase > 0 ? scBase * multiplier : 0 },
+    round: { available: post !== null && post > 0, postMoney: post, date: es?.lastRoundDate ?? null, adjustment: adj, value: post !== null && post > 0 ? post * (1 + adj) : 0 },
+  };
+}
+
 export function reconcile(
   ctx: Ctx,
   d: DcfResult,
@@ -570,25 +694,63 @@ export function reconcile(
   a: AssetFloorResult,
   br: BridgeResult,
   adj: AdjustmentsResult,
+  nv: NavResult,
+  es: EarlyStageResult,
 ): ReconciliationResult {
+  const profile = ctx.profile;
   const young = ctx.input.meta.monthsOfHistory < 36;
-  const wDcf = ctx.n("rec.w_dcf", young ? 0.7 : 0.5);
-  const wMult = ctx.n("rec.w_multiples", young ? 0.3 : 0.5);
-  const wAsset = ctx.n("rec.w_asset", 0);
+  const youngApplies = profile.youngRule && young;
+  const keys = [...new Set<MethodKey>([...profile.methods, "asset"])];
+  const def = (mk: MethodKey) => ctx.defaultFor(weightKey(mk)) ?? 0;
+  const derivedWeight = (mk: MethodKey): number => {
+    if (youngApplies && (mk === "dcf" || mk === "multiples")) {
+      const dd = def("dcf");
+      const mm = def("multiples");
+      return mk === "dcf" ? dd + 0.4 * mm : 0.6 * mm;
+    }
+    return def(mk);
+  };
+  const net = br.netAdjustment;
   const sc = d.scenarios;
-  const methods: MethodRange[] = [
-    {
-      method: "dcf",
-      label: "Discounted cash flow",
-      available: d.available,
-      low: sc ? sc.downside.ev : 0,
-      mid: d.weightedEv,
-      high: sc ? sc.upside.ev : 0,
-      weight: d.available ? wDcf : 0,
-    },
-    { method: "multiples", label: "Market multiples", available: m.available, low: m.low, mid: m.mid, high: m.high, weight: m.available ? wMult : 0 },
-    { method: "asset", label: "Asset-based floor", available: true, low: a.floor, mid: a.floor, high: a.floor, weight: wAsset },
-  ];
+  const range = (mk: MethodKey): { available: boolean; low: number; mid: number; high: number } => {
+    switch (mk) {
+      case "dcf":
+        return { available: d.available, low: sc ? sc.downside.ev : 0, mid: d.weightedEv, high: sc ? sc.upside.ev : 0 };
+      case "multiples":
+        return { available: m.available, low: m.low, mid: m.mid, high: m.high };
+      case "asset":
+        return { available: true, low: a.floor, mid: a.floor, high: a.floor };
+      case "nav":
+        return { available: nv.available, low: nv.totalMarketValue, mid: nv.totalMarketValue, high: nv.totalMarketValue };
+      case "income_cap":
+        return { available: nv.incomeCap.available, low: nv.incomeCap.low, mid: nv.incomeCap.mid, high: nv.incomeCap.high };
+      case "vc":
+        return { available: es.vc.available, low: es.vc.low, mid: es.vc.mid, high: es.vc.high };
+      case "scorecard":
+        return { available: es.scorecard.available, low: es.scorecard.value, mid: es.scorecard.value, high: es.scorecard.value };
+      case "round":
+        return { available: es.round.available, low: es.round.value, mid: es.round.value, high: es.round.value };
+    }
+  };
+  const methods: MethodRange[] = keys.map((mk) => {
+    const w = ctx.n(weightKey(mk), derivedWeight(mk));
+    const r = range(mk);
+    const basis = EQUITY_METHODS.includes(mk) ? ("equity" as const) : ("ev" as const);
+    const toEv = (x: number) => (basis === "equity" ? x - net : x);
+    return {
+      method: mk,
+      label: METHOD_LABELS[mk],
+      available: r.available,
+      basis,
+      low: r.available ? toEv(r.low) : 0,
+      mid: r.available ? toEv(r.mid) : 0,
+      high: r.available ? toEv(r.high) : 0,
+      nativeLow: r.available ? r.low : 0,
+      nativeMid: r.available ? r.mid : 0,
+      nativeHigh: r.available ? r.high : 0,
+      weight: r.available ? w : 0,
+    };
+  });
   const tw = sum(methods.map((x) => x.weight));
   for (const x of methods) x.weight = tw > 0 ? x.weight / tw : 0;
   const agg = (k: "low" | "mid" | "high") => sum(methods.map((x) => x.weight * x[k]));
@@ -599,7 +761,6 @@ export function reconcile(
   const evMid = Math.max(rawMid, a.floor);
   const evHigh = Math.max(rawHigh, a.floor);
   const floorApplied = rawLow < a.floor || rawMid < a.floor || rawHigh < a.floor;
-  const net = br.netAdjustment;
   const f = adj.combinedFactor;
   const rounding = ctx.n("rec.rounding");
   const fx0 = ctx.a("macro.fx_usd_egp");
@@ -612,9 +773,15 @@ export function reconcile(
   const roundedLow = roundTo(adjustedLow, rounding);
   const roundedMid = roundTo(adjustedMid, rounding);
   const roundedHigh = roundTo(adjustedHigh, rounding);
-  const weightsRationale = young
-    ? `Operating history is ${ctx.input.meta.monthsOfHistory} months (under 36): the unit-economics DCF carries more weight than market multiples, because trailing earnings do not yet reflect mature performance.`
-    : `Operating history is ${ctx.input.meta.monthsOfHistory} months: DCF and market multiples are weighted equally by default.`;
+  const used = methods.filter((x) => x.weight > 0).map((x) => `${x.label} ${(x.weight * 100).toFixed(0)}%`).join(", ");
+  let weightsRationale: string;
+  if (youngApplies)
+    weightsRationale = `Operating history is ${ctx.input.meta.monthsOfHistory} months (under 36): the DCF carries more weight than market multiples, because trailing earnings do not yet reflect mature performance. Weights: ${used}.`;
+  else if (profile.model === "early_stage")
+    weightsRationale = `As an early-stage company, the value rests on venture-style methods (expected exit value, comparison with funded peers and recent rounds) rather than current earnings. Weights: ${used}.`;
+  else if (profile.model === "asset_heavy")
+    weightsRationale = `As an asset-heavy business, the market value of its assets and the income they produce carry most weight, with the DCF as support. Weights: ${used}.`;
+  else weightsRationale = `Operating history is ${ctx.input.meta.monthsOfHistory} months. Weights for the ${profile.label.toLowerCase()} profile: ${used}.`;
   return {
     methods,
     youngCompany: young,
@@ -650,43 +817,76 @@ export const SENS_SSS = [-0.04, -0.02, 0, 0.02, 0.04];
 export const SENS_UNITS = [-2, -1, 0, 1, 2];
 export const SENS_CAPEX = [-0.2, -0.1, 0, 0.1, 0.2];
 
-export function sensitivities(base: ForecastParams | null): SensitivityGrid[] {
-  const grid = (
-    key: string,
-    title: string,
-    rowLabel: string,
-    colLabel: string,
-    rows: number[],
-    cols: number[],
-    f: (r: number, c: number) => ForecastParams,
-  ): SensitivityGrid => ({
+export const SENS_EXIT = [-2, -1, 0, 1, 2];
+export const SENS_CAPEX_PCT = [-0.02, -0.01, 0, 0.01, 0.02];
+export const SENS_CAP_RATE = [-0.01, -0.005, 0, 0.005, 0.01];
+export const SENS_NOI = [-0.2, -0.1, 0, 0.1, 0.2];
+export const SENS_VC_RETURN = [-0.1, -0.05, 0, 0.05, 0.1];
+export const SENS_VC_MULT = [-0.5, -0.25, 0, 0.25, 0.5];
+
+export const vcValue = (exitRevenue: number, exitMultiple: number, retention: number, targetReturn: number, years: number) =>
+  (exitRevenue * exitMultiple * retention) / (1 + targetReturn) ** years;
+
+export function sensitivities(
+  model: string,
+  base: ForecastParams | null,
+  extras: { incomeCap?: { noi: number; capRate: number } | null; vc?: { exitRevenue: number; exitMultiple: number; retention: number; targetReturn: number; years: number } | null } = {},
+): SensitivityGrid[] {
+  type F = (r: number, c: number) => number;
+  const grid = (key: string, title: string, rowLabel: string, colLabel: string, rows: number[], cols: number[], f: F | null): SensitivityGrid => ({
     key,
     title,
     rowLabel,
     colLabel,
     rows,
     cols,
-    values: base ? rows.map((r) => cols.map((c) => runForecast(f(r, c)).ev)) : [],
+    values: f ? rows.map((r) => cols.map((c) => f(r, c))) : [],
   });
-  const b = base!;
-  return [
-    grid("rate_growth", "Discount rate vs terminal growth", "Discount rate shift", "Terminal real growth shift", SENS_RATE, SENS_GROWTH, (r, c) => ({
-      ...b,
-      rates: b.rates.map((x) => x + r),
-      terminalRate: b.terminalRate + r,
-      gRealLt: b.gRealLt + c,
-    })),
-    grid("margin_sss", "EBITDA margin vs same-store sales", "EBITDA margin shift", "Real SSS growth shift", SENS_MARGIN, SENS_SSS, (r, c) => ({
-      ...b,
-      marginShift: r,
-      sssReal: b.sssReal + c,
-    })),
-    grid("units_capex", "New units vs capex per unit", "New units per year (change)", "Capex per unit (change)", SENS_UNITS, SENS_CAPEX, (r, c) => ({
-      ...b,
-      newUnits: b.newUnits.map((n) => Math.max(0, n + r)),
-      capexPerUnit: b.capexPerUnit * (1 + c),
-    })),
+  const b = base;
+  const dcfF = (g: (r: number, c: number) => ForecastParams): F | null => (b ? (r, c) => runForecast(g(r, c)).ev : null);
+  if (model === "early_stage") {
+    const v = extras.vc;
+    return [
+      grid("vc_return_multiple", "VC method: target return vs exit multiple", "Target return shift", "Exit multiple change", SENS_VC_RETURN, SENS_VC_MULT, v ? (r, c) => vcValue(v.exitRevenue, v.exitMultiple * (1 + c), v.retention, v.targetReturn + r, v.years) : null),
+    ];
+  }
+  const grids = [
+    grid("rate_growth", "Discount rate vs terminal growth", "Discount rate shift", "Terminal real growth shift", SENS_RATE, SENS_GROWTH, dcfF((r, c) => ({
+      ...b!,
+      rates: b!.rates.map((x) => x + r),
+      terminalRate: b!.terminalRate + r,
+      gRealLt: b!.gRealLt + c,
+    }))),
+    grid(
+      "margin_sss",
+      model === "units" ? "EBITDA margin vs same-store sales" : "EBITDA margin vs revenue growth",
+      "EBITDA margin shift",
+      model === "units" ? "Real SSS growth shift" : "Real revenue growth shift (all years)",
+      SENS_MARGIN,
+      SENS_SSS,
+      dcfF((r, c) => ({ ...b!, marginShift: r, growthReal: b!.growthReal.map((x) => x + c) })),
+    ),
   ];
+  if (model === "units")
+    grids.push(
+      grid("units_capex", "New units vs capex per unit", "New units per year (change)", "Capex per unit (change)", SENS_UNITS, SENS_CAPEX, dcfF((r, c) => ({
+        ...b!,
+        newUnits: b!.newUnits.map((n) => Math.max(0, n + r)),
+        capexPerUnit: b!.capexPerUnit * (1 + c),
+      }))),
+    );
+  else if (model === "asset_heavy") {
+    const ic = extras.incomeCap;
+    grids.push(grid("cap_noi", "Income capitalisation: cap rate vs net operating income", "Cap rate shift", "NOI change", SENS_CAP_RATE, SENS_NOI, ic ? (r, c) => (ic.noi * (1 + c)) / (ic.capRate + r) : null));
+  } else
+    grids.push(
+      grid("exit_capex", "Exit multiple vs capex intensity", "Exit EV/EBITDA shift (x)", "Capex % of revenue shift", SENS_EXIT, SENS_CAPEX_PCT, dcfF((r, c) => ({
+        ...b!,
+        exitMultiple: b!.exitMultiple + r,
+        maintCapexPct: b!.maintCapexPct + c,
+      }))),
+    );
+  return grids;
 }
 
 /* ------------------------------------------------------------------ */
@@ -696,7 +896,7 @@ export function sensitivities(base: ForecastParams | null): SensitivityGrid[] {
 export function openItems(
   ctx: Ctx,
   resolved: ResolvedAssumption[],
-  parts: { dcf: DcfResult; multiples: MultiplesResult; dr: DiscountRateResult },
+  parts: { dcf: DcfResult; multiples: MultiplesResult; dr: DiscountRateResult; rec: ReconciliationResult; nav: NavResult; early: EarlyStageResult },
 ): OpenItem[] {
   const items: OpenItem[] = [];
   const byKey = Object.fromEntries(resolved.map((r) => [r.key, r]));
@@ -705,6 +905,7 @@ export function openItems(
   const fxForecastProvided = [1, 2, 3, 4, 5].some((y) => byKey[`macro.fx_forecast_y${y}`]?.value !== null);
 
   for (const r of resolved) {
+    if (!r.relevant) continue;
     const c = catalogue[r.key]!;
     let optional = !!c.optional;
     if (r.key === "dr.kd_egp") optional = wd <= 0;
@@ -749,10 +950,21 @@ export function openItems(
       items.push({ key: `confirm:${r.key}`, category: "unconfirmed_assumption", severity: "blocking", message: `${r.label}: entered but not confirmed.` });
   }
 
-  if (!parts.dcf.available)
-    items.push({ key: "method:dcf", category: "method", severity: "blocking", message: `DCF not computed. ${parts.dcf.reason ?? ""}` });
-  if (!parts.multiples.available)
-    items.push({ key: "method:multiples", category: "method", severity: "blocking", message: `Multiples not computed. ${parts.multiples.reason ?? ""}` });
+  const wanted = (mk: MethodKey) => (byKey[weightKey(mk)]?.value ?? 0) > 0 && ctx.profile.methods.includes(mk);
+  const reasons: Record<string, string> = {
+    dcf: `DCF not computed. ${parts.dcf.reason ?? ""}`,
+    multiples: `Multiples not computed. ${parts.multiples.reason ?? ""}`,
+    nav: "Net asset value not computed: no assets with a market value.",
+    income_cap: "Income capitalisation not computed: needs a sourced cap rate and positive normalized earnings.",
+    vc: "Venture capital method not computed: needs exit-year revenue, years to exit and an exit multiple.",
+    scorecard: "Scorecard method not computed: needs the median pre-money value of comparable funded startups.",
+    round: "Funding-round method not computed: no priced round recorded.",
+  };
+  for (const mth of parts.rec.methods)
+    if (!mth.available && wanted(mth.method as MethodKey) && reasons[mth.method])
+      items.push({ key: `method:${mth.method}`, category: "method", severity: "blocking", message: reasons[mth.method]! });
+  for (const n of parts.nav.missing)
+    items.push({ key: `nav_missing:${n}`, category: "missing_input", severity: "blocking", message: `${n}: no market value (appraisal) recorded.` });
   for (const w of parts.dr.warnings) items.push({ key: "method:dr_double_count", category: "method", severity: "warning", message: w });
   if (ctx.input.meta.monthsOfHistory < 12)
     items.push({

@@ -121,6 +121,17 @@ export interface OperationsInput {
   /** Share of COGS that is imported (beans, milk alternatives, etc). */
   importedCogsShare: number | null;
   inventoryValue: number | null;
+  /** Share of revenue from the largest customer. */
+  topCustomerShare?: number | null;
+}
+
+export interface NavAssetInput {
+  name: string;
+  kind: string;
+  marketValue: number | null;
+  bookValue: number | null;
+  /** Who valued it and when (appraisal report, broker opinion). */
+  sourceNote: string | null;
 }
 
 export interface EngineInput {
@@ -135,9 +146,22 @@ export interface EngineInput {
     discountRateMethod: "usd_buildup" | "egp_tbill";
     /** Open-item keys the advisor has waived (with a recorded reason). */
     waivedOpenItems: string[];
+    /** Industry profile key (see profiles.ts). Defaults to "fnb". */
+    profileKey?: string;
   };
-  /** Client growth plan: planned new units per forecast year (length 5). */
-  growthPlan: { newUnitsByYear: number[] };
+  /** Profile default values for judgement assumptions (built-in merged with admin edits). */
+  profileDefaults?: Record<string, number>;
+  /** Asset-heavy profiles: assets at market value (from appraisals). */
+  navAssets?: NavAssetInput[];
+  /** Early-stage profiles: client plan and funding history. */
+  earlyStage?: {
+    exitRevenue: number | null;
+    exitYears: number | null;
+    lastRoundPostMoney: number | null;
+    lastRoundDate: string | null;
+  };
+  /** Client growth plan: planned new units per year, and planned nominal revenue growth per year (length 5). */
+  growthPlan: { newUnitsByYear: number[]; revenueGrowthNominal?: (number | null)[] };
   units: UnitInput[];
   /** TTM head-office / central costs not allocated to units. */
   headOfficeCosts: number;
@@ -169,6 +193,8 @@ export interface ResolvedAssumption {
   asOf: string | null;
   stale: boolean;
   requiresSource: boolean;
+  /** False when the assumption does not apply to this profile (hidden, no open items). */
+  relevant: boolean;
   note?: string;
 }
 
@@ -345,13 +371,48 @@ export interface BridgeResult {
 }
 
 export interface MethodRange {
-  method: "dcf" | "multiples" | "asset";
+  method: "dcf" | "multiples" | "asset" | "nav" | "income_cap" | "vc" | "scorecard" | "round";
   label: string;
   available: boolean;
+  /** "ev" = enterprise value; "equity" = equity value (venture-style methods). */
+  basis: "ev" | "equity";
+  /** Enterprise-value equivalent (equity methods: equity less the net-debt bridge). */
   low: number;
   mid: number;
   high: number;
+  /** The method's own result in its own basis. */
+  nativeLow: number;
+  nativeMid: number;
+  nativeHigh: number;
   weight: number;
+}
+
+export interface NavResult {
+  available: boolean;
+  rows: { name: string; kind: string; marketValue: number | null; bookValue: number | null; sourceNote: string | null }[];
+  totalMarketValue: number;
+  missing: string[];
+  incomeCap: { available: boolean; noi: number; capRate: number | null; spread: number; low: number; mid: number; high: number };
+}
+
+export interface EarlyStageResult {
+  vc: {
+    available: boolean;
+    exitRevenue: number;
+    exitYears: number;
+    exitMultipleLow: number | null;
+    exitMultiple: number | null;
+    exitMultipleHigh: number | null;
+    targetReturn: number;
+    retention: number;
+    exitValue: number;
+    discountFactor: number;
+    low: number;
+    mid: number;
+    high: number;
+  };
+  scorecard: { available: boolean; base: number | null; factors: { key: string; label: string; weight: number; score: number; product: number }[]; multiplier: number; value: number };
+  round: { available: boolean; postMoney: number | null; date: string | null; adjustment: number; value: number };
 }
 
 export interface ReconciliationResult {
@@ -398,6 +459,9 @@ export interface OpenItem {
 
 export interface EngineResult {
   engineVersion: string;
+  profile: { key: string; label: string; family: string; model: "units" | "operating" | "early_stage" | "asset_heavy"; methods: string[] };
+  nav: NavResult;
+  earlyStage: EarlyStageResult;
   assumptions: ResolvedAssumption[];
   normalization: NormalizationResult;
   unitEconomics: UnitEconomicsResult;

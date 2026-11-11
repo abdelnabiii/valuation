@@ -1,4 +1,5 @@
-import { CATALOGUE, CATALOGUE_BY_KEY, STALE_DAYS } from "./catalogue";
+import { CATALOGUE, CATALOGUE_BY_KEY, STALE_DAYS, isRelevant } from "./catalogue";
+import { getProfile, type ProfileDef } from "./profiles";
 import { daysBetween } from "./math";
 import type { EngineInput, ResolvedAssumption, ValueOrigin } from "./types";
 
@@ -13,8 +14,17 @@ import type { EngineInput, ResolvedAssumption, ValueOrigin } from "./types";
  */
 export class Ctx {
   readonly resolved = new Map<string, ResolvedAssumption>();
+  readonly profile: ProfileDef;
 
-  constructor(readonly input: EngineInput) {}
+  constructor(readonly input: EngineInput) {
+    this.profile = getProfile(input.meta.profileKey);
+  }
+
+  /** Default for a judgement assumption: admin/profile default, else catalogue default. */
+  defaultFor(key: string): number | undefined {
+    const pd = this.input.profileDefaults?.[key] ?? this.profile.defaults[key];
+    return pd ?? CATALOGUE_BY_KEY[key]?.default;
+  }
 
   a(key: string, derived?: number | null, note?: string): number | null {
     const cached = this.resolved.get(key);
@@ -35,8 +45,8 @@ export class Ctx {
       value = derived;
       origin = "derived";
       confirmed = false;
-    } else if (entry.default !== undefined) {
-      value = entry.default;
+    } else if (this.defaultFor(key) !== undefined) {
+      value = this.defaultFor(key)!;
       origin = "default";
       confirmed = false;
     }
@@ -61,6 +71,7 @@ export class Ctx {
       asOf,
       stale,
       requiresSource,
+      relevant: isRelevant(key, this.profile.model, this.profile.methods),
       note,
     });
     return value;

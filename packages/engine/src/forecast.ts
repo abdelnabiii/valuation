@@ -10,7 +10,8 @@ export interface ForecastParams {
   baseRevenue: number; // TTM revenue, year 0
   baseMargin: number; // normalized EBITDA margin, year 0
   inflation: number[]; // EGP CPI, years 1..5
-  sssReal: number;
+  /** Real growth of existing revenue, years 1..5 (same-store growth for multi-site). */
+  growthReal: number[];
   marginDelta: number; // pp change reached in year 5
   marginShift: number; // parallel shift (sensitivities only)
   newUnits: number[]; // years 1..5
@@ -42,7 +43,7 @@ export function runForecast(p: ForecastParams): ScenarioResult {
   for (let t = 1; t <= 5; t++) {
     const pi = p.inflation[t - 1]!;
     priceIndex = priceIndex * (1 + pi);
-    existing = existing * (1 + p.sssReal) * (1 + pi);
+    existing = existing * (1 + p.growthReal[t - 1]!) * (1 + pi);
     const opened = p.newUnits[t - 1]!;
     cumUnits = cumUnits + opened;
     cumByYear.push(cumUnits);
