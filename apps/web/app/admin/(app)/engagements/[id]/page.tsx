@@ -2,6 +2,8 @@ import Link from "next/link";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db, engagement, intakeLink } from "@/lib/db";
 import { loadIntake } from "@/lib/intake/server";
+import { intakeConfig } from "@/lib/intake/config";
+import { PROFILES } from "@valuation/engine";
 import { completion, checks } from "@/lib/intake/types";
 import { latestRun } from "@/lib/runs";
 import { updateEngagement } from "@/app/admin/actions";
@@ -13,9 +15,10 @@ export default async function Overview({ params }: { params: Promise<{ id: strin
   const { id } = await params;
   const [e] = await db().select().from(engagement).where(eq(engagement.id, id));
   const [link] = await db().select().from(intakeLink).where(and(eq(intakeLink.engagementId, id), isNull(intakeLink.revokedAt))).orderBy(desc(intakeLink.createdAt)).limit(1);
-  const state = await loadIntake(id);
-  const comp = completion(state);
-  const issues = checks(state);
+  const config = intakeConfig(e!.profileKey);
+  const state = await loadIntake(id, config);
+  const comp = completion(state, config);
+  const issues = checks(state, config);
   const run = await latestRun(id);
   const res = run?.result as EngineResult | undefined;
   const save = updateEngagement.bind(null, id);
@@ -51,6 +54,13 @@ export default async function Overview({ params }: { params: Promise<{ id: strin
           <h2>Engagement settings</h2>
           <form action={save}>
             <div className="grid2">
+              <div className="field" style={{ gridColumn: "1 / -1" }}>
+                <label htmlFor="profile_key">Industry profile</label>
+                <select id="profile_key" name="profile_key" defaultValue={e!.profileKey}>
+                  {PROFILES.map((p) => <option key={p.key} value={p.key}>{p.family}: {p.label}</option>)}
+                </select>
+                <div className="help">Sets the questionnaire, the forecast model and the valuation methods. Changing it after the client has started may hide answers that no longer apply (they are kept).</div>
+              </div>
               <div className="field"><label htmlFor="title">Title</label><input id="title" name="title" defaultValue={e!.title} /></div>
               <div className="field"><label htmlFor="valuation_date">Valuation date</label><input id="valuation_date" name="valuation_date" type="date" defaultValue={e!.valuationDate ?? ""} /></div>
               <div className="field"><label htmlFor="purpose">Purpose</label><input id="purpose" name="purpose" defaultValue={e!.purpose ?? ""} /></div>

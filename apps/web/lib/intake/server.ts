@@ -12,14 +12,23 @@ import {
   upload,
 } from "../db";
 import { audit, diffEntries } from "../audit";
-import { SECTION_BY_KEY } from "./sections";
+import type { IntakeConfig } from "./config";
 import { completion, parseCellKey, sectionCompletion, type IntakeState } from "./types";
 
 const num = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
 const str = (v: number | null | undefined) => (v === null || v === undefined ? null : String(v));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function loadIntake(engagementId: string): Promise<IntakeState> {
+/** Non-multi-site profiles keep their figures on one implicit "Company" unit. */
+export async function ensureCompanyUnit(engagementId: string, cfg: IntakeConfig) {
+  if (cfg.model === "units") return;
+  const existing = await db().select({ id: unit.id }).from(unit).where(eq(unit.engagementId, engagementId));
+  if (existing.length) return;
+  await db().insert(unit).values({ engagementId, name: "Company", format: "company", status: "operating", sortOrder: 0 });
+}
+
+export async function loadIntake(engagementId: string, cfg?: IntakeConfig): Promise<IntakeState> {
+  if (cfg) await ensureCompanyUnit(engagementId, cfg);
   const d = db();
   const [secs, units, caps, abs, debts, fins, ups] = await Promise.all([
     d.select().from(intakeSection).where(eq(intakeSection.engagementId, engagementId)),
@@ -99,15 +108,15 @@ type Payload = Record<string, unknown>;
  * Save one section. `data` shape depends on the section kind.
  * Returns the fresh state so the client can re-render completion and checks.
  */
-export async function saveSection(engagementId: string, actor: string, sectionKey: string, data: Payload) {
-  const def = SECTION_BY_KEY[sectionKey];
+export async function saveSection(engagementId: string, actor: string, sectionKey: string, data: Payload, cfg: IntakeConfig) {
+  const def = cfg.sections.find((x) => x.key === sectionKey);
   if (!def) throw new Error("Unknown section");
   const d = db();
   const base = { engagementId, actor, action: "update", entity: `intake.${sectionKey}` };
 
   // JSON part (fields sections, toggles on structured sections)
   if (data.fields && typeof data.fields === "object") {
-    const allowed = new Set([...(def.fields ?? []).map((f) => f.key), "none_confirmed", "end_month", "months_count"]);
+    const allowed = new Set([...(def.fields ?? []).map((f) => f.key), "none_confirmed", "end_month", "months_count", ...(def.kind === "assets" ? ["rows"] : [])]);
     const clean = Object.fromEntries(Object.entries(data.fields as Payload).filter(([k]) => allowed.has(k)));
     const [prev] = await d
       .select()
@@ -278,8 +287,8 @@ export async function saveSection(engagementId: string, actor: string, sectionKe
   }
 
   // Completion snapshot for the section
-  const state = await loadIntake(engagementId);
-  const pct = Math.round(sectionCompletion(def, state) * 100);
+  const state = await loadIntake(engagementId, cfg);
+  const pct = Math.round(sectionCompletion(def, state, cfg) * 100);
   await d
     .insert(intakeSection)
     .values({ engagementId, sectionKey, data: state.sections[sectionKey] ?? {}, completionPct: pct, updatedBy: actor })
@@ -287,5 +296,5 @@ export async function saveSection(engagementId: string, actor: string, sectionKe
       target: [intakeSection.engagementId, intakeSection.sectionKey],
       set: { completionPct: pct, updatedAt: sql`now()` },
     });
-  return { state, completion: completion(state) };
+  return { state, completion: completion(state, cfg) };
 }

@@ -40,6 +40,8 @@ export interface ExportContext {
     growthPlan?: string | null;
     growthBudget?: number | null;
     pendingOffers?: string | null;
+    /** Industry KPIs answered in the intake (label and formatted value), in display order. */
+    kpis?: { label: string; value: string }[];
   };
   sources: {
     id: string;
@@ -67,4 +69,6 @@ export const SECTION_LABELS: Record<string, string> = {
   asset_floor: "Asset floor",
   adjustments: "Adjustments",
   reconciliation: "Reconciliation",
+  nav: "Net asset value",
+  early_stage: "Early-stage methods",
 };

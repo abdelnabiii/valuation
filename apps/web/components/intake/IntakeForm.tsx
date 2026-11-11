@@ -1,16 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  CAPEX_CATEGORIES,
-  COST_LINES,
-  DEBT_KINDS,
-  REVENUE_CHANNELS,
-  SECTIONS,
-  UNIT_FORMATS,
-  type Field,
-  type SectionDef,
-} from "@/lib/intake/sections";
+import { CAPEX_CATEGORIES, DEBT_KINDS, UNIT_FORMATS, type Field, type SectionDef } from "@/lib/intake/sections";
+import type { IntakeConfig } from "@/lib/intake/config";
 import {
   cellKey,
   checks as runChecks,
@@ -25,6 +17,7 @@ import {
 } from "@/lib/intake/types";
 
 type Props = {
+  config: IntakeConfig;
   initial: IntakeState;
   saveUrl: string;
   uploadUrl: string;
@@ -35,7 +28,8 @@ type Props = {
 
 const uid = () => crypto.randomUUID();
 
-export default function IntakeForm({ initial, saveUrl, uploadUrl, submitUrl, locked = false, mode }: Props) {
+export default function IntakeForm({ config, initial, saveUrl, uploadUrl, submitUrl, locked = false, mode }: Props) {
+  const SECTIONS = config.sections;
   const [state, setState] = useState<IntakeState>(initial);
   const [active, setActive] = useState<string>(SECTIONS[0]!.key);
   const [saving, setSaving] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
@@ -44,8 +38,8 @@ export default function IntakeForm({ initial, saveUrl, uploadUrl, submitUrl, loc
   const pending = useRef<Record<string, Record<string, unknown>>>({});
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const comp = useMemo(() => computeCompletion(state), [state]);
-  const issues = useMemo(() => runChecks(state), [state]);
+  const comp = useMemo(() => computeCompletion(state, config), [state, config]);
+  const issues = useMemo(() => runChecks(state, config), [state, config]);
   const readOnly = submitted && mode === "client";
 
   const flush = useCallback(async () => {
@@ -192,7 +186,7 @@ export default function IntakeForm({ initial, saveUrl, uploadUrl, submitUrl, loc
             </div>
           )}
           <fieldset disabled={readOnly} style={{ border: 0, padding: 0, margin: 0 }}>
-            <SectionEditor def={def} state={state} setState={setState} queue={queue} setFields={setFields} uploadUrl={uploadUrl} />
+            <SectionEditor def={def} state={state} setState={setState} queue={queue} setFields={setFields} uploadUrl={uploadUrl} config={config} />
           </fieldset>
         </div>
         <div className="spread" style={{ marginTop: 16 }}>
@@ -209,6 +203,7 @@ export default function IntakeForm({ initial, saveUrl, uploadUrl, submitUrl, loc
 }
 
 type EditorProps = {
+  config: IntakeConfig;
   def: SectionDef;
   state: IntakeState;
   setState: React.Dispatch<React.SetStateAction<IntakeState>>;
@@ -235,6 +230,8 @@ function SectionEditor(p: EditorProps) {
       return <DebtEditor {...p} />;
     case "uploads":
       return <UploadsEditor {...p} />;
+    case "assets":
+      return <AssetsEditor {...p} />;
   }
 }
 
@@ -417,9 +414,12 @@ function UnitsEditor({ state, setState, queue }: EditorProps) {
 
 /* ---------------- Financials ---------------- */
 
-function FinancialsEditor({ def, state, setState, queue, setFields }: EditorProps) {
+function FinancialsEditor({ def, state, setState, queue, setFields, config }: EditorProps) {
   const months = monthsWindow(state);
-  const tabs = [...state.units.filter((u) => u.status !== "closed").map((u) => ({ id: u.id, name: u.name })), { id: "ho", name: "Head office" }];
+  const unitsModel = config.model === "units";
+  const tabs = unitsModel
+    ? [...state.units.filter((u) => u.status !== "closed").map((u) => ({ id: u.id, name: u.name })), { id: "ho", name: "Head office" }]
+    : state.units.slice(0, 1).map((u) => ({ id: u.id, name: "Company" }));
   const [tab, setTab] = useState(tabs[0]?.id ?? "ho");
   const f = state.sections.financials ?? {};
 
@@ -439,8 +439,8 @@ function FinancialsEditor({ def, state, setState, queue, setFields }: EditorProp
     tab === "ho"
       ? [{ line: "head_office", channel: null as string | null, label: "Head-office costs (total)" }]
       : [
-          ...REVENUE_CHANNELS.map((c) => ({ line: "revenue", channel: c.key as string | null, label: `Revenue: ${c.label}` })),
-          ...COST_LINES.map((c) => ({ line: c.key as string, channel: null as string | null, label: c.label })),
+          ...config.channels.map((c) => ({ line: "revenue", channel: c.key as string | null, label: `Revenue: ${c.label}` })),
+          ...config.costLines.map((c) => ({ line: c.key as string, channel: null as string | null, label: c.label })),
         ];
 
   const total = (m: string, filter: (line: string) => boolean) =>
@@ -461,14 +461,14 @@ function FinancialsEditor({ def, state, setState, queue, setFields }: EditorProp
           </select>
         </div>
       </div>
-      {!state.units.length && <p className="notice">Add units in section 3 first.</p>}
-      <div className="tabs" role="tablist">
+      {!state.units.length && <p className="notice">Add {config.unitPlural} in section 3 first.</p>}
+      {unitsModel && <div className="tabs" role="tablist">
         {tabs.map((t) => (
           <a key={t.id} href="#" role="tab" aria-current={tab === t.id ? "page" : undefined} onClick={(e) => { e.preventDefault(); setTab(t.id); }}>
             {t.name}
           </a>
         ))}
-      </div>
+      </div>}
       <p className="help muted" style={{ fontSize: 12 }}>
         Amounts in EGP. You can paste a row copied from Excel into the first month and it fills across.
       </p>
@@ -526,7 +526,7 @@ const fmt0 = (n: number) => (n ? Math.round(n).toLocaleString("en-US") : "–");
 
 /* ---------------- Leases ---------------- */
 
-function LeasesEditor({ state, setState, queue }: EditorProps) {
+function LeasesEditor({ state, setState, queue, config }: EditorProps) {
   const set = (unitId: string, patch: Partial<LeaseRow>) => {
     const empty: LeaseRow = { yearsRemaining: null, monthlyRent: null, escalationPct: null, escalationEveryMonths: null, renewalRight: null, renewalTerms: null, deposit: null };
     const next = { ...(state.leases[unitId] ?? empty), ...patch };
@@ -534,13 +534,13 @@ function LeasesEditor({ state, setState, queue }: EditorProps) {
     queue("leases", {}, (prev) => ({ ...prev, leases: { ...((prev.leases as object) ?? {}), [unitId]: next } }));
   };
   const units = state.units.filter((u) => u.status !== "closed");
-  if (!units.length) return <p className="notice">Add units in section 3 first.</p>;
+  if (!units.length) return <p className="notice">Add {config.unitPlural} in section 3 first.</p>;
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Unit</th>
+            <th>{config.model === "units" ? config.unitSingular.charAt(0).toUpperCase() + config.unitSingular.slice(1) : "Premises"}</th>
             <th className="n">Years left</th>
             <th className="n">Monthly rent (EGP)</th>
             <th className="n">Escalation %</th>
@@ -580,14 +580,14 @@ function LeasesEditor({ state, setState, queue }: EditorProps) {
 
 /* ---------------- Capex ---------------- */
 
-function CapexEditor({ state, setState, queue }: EditorProps) {
+function CapexEditor({ state, setState, queue, config }: EditorProps) {
   const update = (capex: CapexRow[]) => {
     setState((s) => ({ ...s, capex }));
     queue("capex", { capex });
   };
   const set = (id: string, patch: Partial<CapexRow>) => update(state.capex.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   const units = state.units;
-  if (!units.length) return <p className="notice">Add units in section 3 first.</p>;
+  if (!units.length) return <p className="notice">Add {config.unitPlural} in section 3 first.</p>;
   return (
     <div className="stack">
       {units.map((u) => {
@@ -596,7 +596,7 @@ function CapexEditor({ state, setState, queue }: EditorProps) {
         return (
           <div key={u.id}>
             <div className="spread">
-              <h3 style={{ margin: 0 }}>{u.name}</h3>
+              <h3 style={{ margin: 0 }}>{config.model === "units" ? u.name : "Company fixed assets"}</h3>
               <span className="muted">Total EGP {fmt0(tot)}</span>
             </div>
             <div className="table-wrap" style={{ marginTop: 8 }}>
@@ -810,6 +810,58 @@ function UploadsEditor({ state, setState, uploadUrl }: EditorProps) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Properties and major assets (asset-heavy) ---------------- */
+
+type AssetRow = { id: string; name: string; kind: string; market_value: number | null; book_value: number | null; valuer: string | null; valuation_date: string | null };
+
+const ASSET_KINDS = [
+  { value: "building", label: "Building" },
+  { value: "land", label: "Land" },
+  { value: "investment_property", label: "Investment property" },
+  { value: "hotel", label: "Hotel / resort" },
+  { value: "equipment", label: "Major equipment" },
+  { value: "other", label: "Other" },
+];
+
+function AssetsEditor({ state, setFields }: EditorProps) {
+  const rows = ((state.sections.assets?.rows as AssetRow[] | undefined) ?? []).map((r) => ({ ...r }));
+  const update = (next: AssetRow[]) => setFields("assets", { rows: next });
+  const set = (id: string, patch: Partial<AssetRow>) => update(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  return (
+    <div className="stack">
+      <p className="muted">Market values should come from a recent independent appraisal. Book values are for reference only.</p>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Asset</th><th>Type</th><th className="n">Market value (EGP)</th><th className="n">Book value (EGP)</th><th>Valued by</th><th>Valuation date</th><th /></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td><input aria-label="Asset" value={r.name} onChange={(e) => set(r.id, { name: e.target.value })} /></td>
+                <td>
+                  <select aria-label="Type" value={r.kind} onChange={(e) => set(r.id, { kind: e.target.value })}>
+                    {ASSET_KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
+                  </select>
+                </td>
+                <td><NumInput ariaLabel="Market value" value={r.market_value} onChange={(n) => set(r.id, { market_value: n })} /></td>
+                <td><NumInput ariaLabel="Book value" value={r.book_value} onChange={(n) => set(r.id, { book_value: n })} /></td>
+                <td><input aria-label="Valued by" value={r.valuer ?? ""} onChange={(e) => set(r.id, { valuer: e.target.value || null })} /></td>
+                <td><input aria-label="Valuation date" type="date" value={r.valuation_date ?? ""} onChange={(e) => set(r.id, { valuation_date: e.target.value || null })} /></td>
+                <td><button className="btn small danger" onClick={() => update(rows.filter((x) => x.id !== r.id))}>Remove</button></td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={7} className="empty">No assets listed.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <button className="btn secondary" onClick={() => update([...rows, { id: uid(), name: "", kind: "building", market_value: null, book_value: null, valuer: null, valuation_date: null }])}>
+        Add asset
+      </button>
     </div>
   );
 }

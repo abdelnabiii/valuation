@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readSession } from "@/lib/auth";
 import { saveSection } from "@/lib/intake/server";
+import { configForEngagement } from "@/lib/profile";
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const s = await readSession();
@@ -8,6 +9,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const { id } = await ctx.params;
   const body = (await req.json().catch(() => null)) as { section?: string; data?: Record<string, unknown> } | null;
   if (!body?.section || !body.data) return new NextResponse("Bad request", { status: 400 });
-  const r = await saveSection(id, s.email, body.section, body.data);
+  const r = await saveSection(id, s.email, body.section, body.data, await configForEngagement(id));
   return NextResponse.json({ completion: r.completion });
 }

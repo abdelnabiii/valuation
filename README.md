@@ -1,6 +1,6 @@
 # Valuation advisory platform
 
-A reusable platform for advisory valuations of specialty coffee and F&B brands: one engine, a new client file each time. Market Egypt; model currency nominal EGP with a USD cross-check; your fee is recorded in USD. Currency, language and market are stored per engagement.
+A reusable platform for advisory valuations of private companies in any industry: one engine, a new client file each time. Each engagement picks an **industry profile**, which sets the questionnaire, the forecast model, the valuation methods and their default weights. Market Egypt; model currency nominal EGP with a USD cross-check; your fee is recorded in USD. Currency, language and market are stored per engagement.
 
 **What it produces for each client**
 
@@ -8,6 +8,18 @@ A reusable platform for advisory valuations of specialty coffee and F&B brands: 
 2. A valuation in nine visible steps: normalization, unit economics, DCF (three scenarios, two terminal values, explicit EGP inflation and FX), multiples, young-company weighting, asset floor, adjustments, reconciliation, sensitivities.
 3. A formula-driven Excel model (13 sheets, blue inputs / black formulas) that reconciles to the engine to the cent.
 4. A client report (Word and PDF) and an investor deck (PowerPoint, 9 slides).
+
+## Industry profiles
+
+| Family | Profiles | Forecast model | Methods (default weights) |
+|---|---|---|---|
+| Multi-site | F&B, retail chains, healthcare clinics, education | Unit by unit: same-store growth plus new openings | DCF, multiples, asset floor |
+| Operating business | Manufacturing, distribution, professional services, logistics, construction | Company level: revenue growth per year and margin path | DCF, multiples, asset floor |
+| Recurring revenue | SaaS | Company level, margin expansion | DCF, multiples (EV/revenue weighted) |
+| Early stage | Startups | Venture-capital method, scorecard, latest priced round (equity values) | VC 40%, scorecard 30%, round 30% |
+| Asset-heavy | Real estate, hotels | Net asset value at appraised market value, income capitalisation, DCF | NAV, cap rate, DCF |
+
+Profiles live in `packages/engine/src/profiles.ts` (methods, defaults, labels) and `apps/web/lib/intake/config.ts` (questionnaire and industry KPIs). Edit a profile's default assumptions and weights in the app under **Industry profiles**; defaults still need confirming on each engagement. Banks, insurers and sum-of-the-parts group valuations are not supported.
 
 ## Stack
 
@@ -84,4 +96,4 @@ Every change (client and admin) is in the **Audit trail**, with who, when, old a
 
 ## Demo client
 
-"Demo: Harbor Lane Coffee (fictional)" has 24 months of invented data for three units. Its macro inputs and comparables are **illustrative placeholders, not market data**, attached to a source titled "ILLUSTRATIVE PLACEHOLDER". The demo therefore always shows as provisional.
+"Demo: Harbor Lane Coffee (fictional)" (F&B profile) has 24 months of invented data for three units. "Demo: Delta Corrugated Works (fictional)" (manufacturing profile) has invented company-level data; its macro inputs are copied from the sourced values on the first demo, and it has no comparables until sourced ones are added (`pnpm --filter @valuation/db exec tsx src/seed-demo-manufacturing.ts` recreates it). Its macro inputs and comparables are **illustrative placeholders, not market data**, attached to a source titled "ILLUSTRATIVE PLACEHOLDER". The demo therefore always shows as provisional.

@@ -128,6 +128,8 @@ export const engagement = pgTable("engagement", {
     .notNull()
     .references(() => client.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
+  /** Industry profile (see packages/engine/src/profiles.ts). */
+  profileKey: text("profile_key").notNull().default("fnb"),
   purpose: text("purpose"),
   scope: text("scope"),
   valuationDate: date("valuation_date"),
@@ -447,4 +449,18 @@ export const researchProposal = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("rp_eng_idx").on(t.engagementId, t.status)],
+);
+
+/** Admin-edited defaults per industry profile (override the built-in profile defaults). */
+export const profileDefault = pgTable(
+  "profile_default",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    profileKey: text("profile_key").notNull(),
+    assumptionKey: text("assumption_key").notNull(),
+    value: numeric("value", { precision: 20, scale: 8 }).notNull(),
+    updatedBy: text("updated_by").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("profile_default_uq").on(t.profileKey, t.assumptionKey)],
 );

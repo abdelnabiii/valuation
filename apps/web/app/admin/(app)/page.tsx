@@ -2,7 +2,8 @@ import Link from "next/link";
 import { desc, eq, sql } from "drizzle-orm";
 import { client, db, engagement, intakeSection, valuationRun } from "@/lib/db";
 import { createEngagement } from "../actions";
-import { SECTIONS } from "@/lib/intake/sections";
+import { intakeConfig } from "@/lib/intake/config";
+import { PROFILES, getProfile } from "@valuation/engine";
 import { egpM } from "@/lib/format";
 import type { EngineResult } from "@valuation/engine";
 
@@ -33,7 +34,6 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     .selectDistinctOn([valuationRun.engagementId], { id: valuationRun.engagementId, result: valuationRun.result, at: valuationRun.createdAt })
     .from(valuationRun)
     .orderBy(valuationRun.engagementId, desc(valuationRun.createdAt));
-  const counted = SECTIONS.filter((s) => s.key !== "uploads").length;
   return (
     <>
       <div className="page-head">
@@ -49,6 +49,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             <tr>
               <th>Client</th>
               <th>Engagement</th>
+              <th>Industry</th>
               <th>Status</th>
               <th className="n">Intake</th>
               <th className="n">Latest mid value</th>
@@ -57,6 +58,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           </thead>
           <tbody>
             {rows.map(({ e, c }) => {
+              const counted = intakeConfig(e.profileKey).sections.filter((s) => s.key !== "uploads").length;
               const pct = Math.round(Number(comp.find((x) => x.id === e.id)?.total ?? 0) / counted);
               const run = runs.find((r) => r.id === e.id);
               const res = run?.result as EngineResult | undefined;
@@ -66,6 +68,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                     <Link href={`/admin/engagements/${e.id}`}>{c.name}</Link> {c.isDemo && <span className="tag info">Demo</span>}
                   </td>
                   <td>{e.title}</td>
+                  <td className="muted">{getProfile(e.profileKey).label.split(" (")[0]}</td>
                   <td>
                     <span className={`tag ${e.status === "final" ? "ok" : e.status === "provisional" ? "warn" : ""}`}>{STATUS[e.status]}</span>
                   </td>
@@ -77,7 +80,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             })}
             {!rows.length && (
               <tr>
-                <td colSpan={6} className="empty">No engagements yet.</td>
+                <td colSpan={7} className="empty">No engagements yet.</td>
               </tr>
             )}
           </tbody>
@@ -90,6 +93,17 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <div className="field">
             <label htmlFor="client" className="req">Client (brand) name</label>
             <input id="client" name="client" required />
+          </div>
+          <div className="field" style={{ gridColumn: "1 / -1" }}>
+            <label htmlFor="profile_key" className="req">Industry profile</label>
+            <select id="profile_key" name="profile_key" defaultValue="fnb">
+              {PROFILES.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.family}: {p.label}
+                </option>
+              ))}
+            </select>
+            <div className="help">Sets the questionnaire, the forecast model and the valuation methods. You can change it later.</div>
           </div>
           <div className="field">
             <label htmlFor="title">Engagement title</label>
@@ -109,7 +123,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           </div>
           <div className="field">
             <label htmlFor="segment">Segment</label>
-            <input id="segment" name="segment" placeholder="Specialty coffee" />
+            <input id="segment" name="segment" placeholder="e.g. Specialty coffee, FMCG distribution" />
           </div>
           <div>
             <button className="btn" type="submit">Create engagement</button>

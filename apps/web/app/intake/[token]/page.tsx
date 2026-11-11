@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { resolveToken } from "@/lib/links";
 import { loadIntake } from "@/lib/intake/server";
+import { intakeConfig } from "@/lib/intake/config";
 import { getBranding } from "@/lib/branding";
 import IntakeForm from "@/components/intake/IntakeForm";
 
@@ -23,7 +24,8 @@ export default async function IntakePage({ params }: { params: Promise<{ token: 
       </main>
     );
   }
-  const state = await loadIntake(r.engagement.id);
+  const config = intakeConfig(r.engagement.profileKey);
+  const state = await loadIntake(r.engagement.id, config);
   const base = `/api/intake/${encodeURIComponent(token)}`;
   return (
     <>
@@ -34,7 +36,7 @@ export default async function IntakePage({ params }: { params: Promise<{ token: 
           <p>Your answers save automatically. You can close this page and come back with the same link. Fields marked * are required.</p>
         </div>
       </header>
-      <IntakeForm initial={state} saveUrl={base} uploadUrl={`${base}/upload`} submitUrl={`${base}/submit`} locked={r.link.locked} mode="client" />
+      <IntakeForm config={config} initial={state} saveUrl={base} uploadUrl={`${base}/upload`} submitUrl={`${base}/submit`} locked={r.link.locked} mode="client" />
       <footer className="narrow faint" style={{ fontSize: 12, paddingTop: 0 }}>
         {brand.footerText} Information you provide is used only for this valuation.
       </footer>

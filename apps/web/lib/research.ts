@@ -2,7 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { and, eq } from "drizzle-orm";
-import { CATALOGUE } from "@valuation/engine";
+import { CATALOGUE, getProfile } from "@valuation/engine";
 import { claude, MODEL, normUrl, searchTurn, type SearchHit } from "./claude";
 import { db, engagement, researchProposal, source } from "./db";
 import { audit } from "./audit";
@@ -103,13 +103,22 @@ async function saveSource(engagementId: string, kind: "macro" | "transaction" | 
   return s!;
 }
 
-export async function researchMacro(engagementId: string, actor: string, keys = MACRO_KEYS) {
+export async function researchMacro(engagementId: string, actor: string, keysIn?: string[]) {
   const [e] = await db().select().from(engagement).where(eq(engagement.id, engagementId));
+  const profile = getProfile(e?.profileKey);
+  const keys =
+    keysIn ??
+    (profile.model === "early_stage"
+      ? ["macro.fx_usd_egp", "macro.vat_rate", "sc.base_premoney"]
+      : profile.model === "asset_heavy"
+        ? [...MACRO_KEYS, "nav.cap_rate"]
+        : MACRO_KEYS);
   const vd = e?.valuationDate ?? new Date().toISOString().slice(0, 10);
   const groups = [
     ["macro.us_rf", "macro.usd_inflation", "macro.erp", "macro.crp_egypt", "dr.size_premium"],
     ["macro.egp_tbill", "macro.fx_usd_egp", "macro.tax_rate", "macro.vat_rate"],
     ["macro.egp_inflation_y1", "macro.egp_inflation_y2", "macro.egp_inflation_y3", "macro.egp_inflation_y4", "macro.egp_inflation_y5", "macro.egp_inflation_lt"],
+    ["nav.cap_rate", "sc.base_premoney"],
   ]
     .map((g) => g.filter((k) => keys.includes(k)))
     .filter((g) => g.length);
@@ -119,7 +128,7 @@ export async function researchMacro(engagementId: string, actor: string, keys = 
       const wanted = CATALOGUE.filter((c) => g.includes(c.key)).map((c) => `- ${c.key}: ${c.label}`).join("\n");
       return searchTurn(
         SYSTEM,
-        `Valuation date: ${vd}. Market: Egypt. Find the most recent published value, on or before the valuation date where possible, for each item:\n${wanted}\n\nNotes: EGP inflation forecasts for years 1-5 should come from a published forecast (e.g. IMF World Economic Outlook / Article IV, central bank or ministry projections) and say which calendar year each figure refers to. Long-term EGP inflation: the latest year of such a forecast. Equity risk premium and Egypt country risk premium: Damodaran's current dataset. Size premium: a published size-premium study for the smallest size decile. USD/EGP spot: look up today's rate live (Central Bank of Egypt official rate, or a live mid-market quote such as XE.com) and give the exact quote time; never use a remembered or older rate. Write one paragraph per item with value, URL, title, publisher, date and a verbatim quote.`,
+        `Valuation date: ${vd}. Market: Egypt. Find the most recent published value, on or before the valuation date where possible, for each item:\n${wanted}\n\nNotes: EGP inflation forecasts for years 1-5 should come from a published forecast (e.g. IMF World Economic Outlook / Article IV, central bank or ministry projections) and say which calendar year each figure refers to. Long-term EGP inflation: the latest year of such a forecast. Equity risk premium and Egypt country risk premium: Damodaran's current dataset. Size premium: a published size-premium study for the smallest size decile. Cap rate (if asked): recent transaction or valuer cap rates for ${profile.label.toLowerCase()} in Egypt. Median pre-money of comparable funded startups (if asked): stated pre-money valuations of recent seed/Series A rounds in Egypt or MENA, converted to EGP only if the source gives an EGP figure; otherwise report the USD figure and say so. USD/EGP spot: look up today's rate live (Central Bank of Egypt official rate, or a live mid-market quote such as XE.com) and give the exact quote time; never use a remembered or older rate. Write one paragraph per item with value, URL, title, publisher, date and a verbatim quote.`,
         10,
       );
     }),
@@ -155,9 +164,13 @@ export async function researchMacro(engagementId: string, actor: string, keys = 
 }
 
 export async function researchComparables(engagementId: string, actor: string) {
+  const [eng] = await db().select().from(engagement).where(eq(engagement.id, engagementId));
+  const profile = getProfile(eng?.profileKey);
+  const subject = `${profile.label.toLowerCase()} business in Egypt`;
+  const damodaran = `Also look up Aswath Damodaran's current Emerging Markets industry datasets (pages.stern.nyu.edu, EV/EBITDA "vebitdaemerg", EV/Sales "psemerg") for the industry ${profile.damodaranIndustry}, and report the industry EV/EBITDA and EV/Sales with the dataset date as one "listed" item named "Damodaran EM industry: <industry>".`;
   const prompts = [
-    `Find transactions (last 5 years) involving coffee shop, café, bakery-café or quick-service F&B businesses in Egypt, the GCC, North Africa and other emerging markets, where a source states EV/EBITDA, EV/revenue or the deal value with revenue or EBITDA. For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
-    `Find listed F&B and restaurant companies on EGX and regional exchanges (and, if few, listed coffee chains in emerging markets) with current EV/EBITDA and EV/revenue as stated by a data source. For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
+    `Comparables for a ${subject}. Find transactions (last 5 years) involving ${profile.compsQuery} in Egypt, the GCC, North Africa and other emerging markets, where a source states EV/EBITDA, EV/revenue or the deal value with revenue or EBITDA. For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
+    `Comparables for a ${subject}. Find listed companies on EGX and regional exchanges comparable to ${profile.compsQuery} (and, if few, listed peers in other emerging markets) with current EV/EBITDA and EV/revenue as stated by a data source. ${damodaran} For each: name, deal or data date, country, what the multiple is, URL, title, publisher, and a verbatim quote stating the figure. Only include multiples a source states or the exact figures needed to compute them (deal value and the stated EBITDA or revenue).`,
   ];
   const turns = await Promise.all(prompts.map((pr) => searchTurn(SYSTEM, pr, 12)));
   const text = turns.map((t) => t.text).join("\n\n");

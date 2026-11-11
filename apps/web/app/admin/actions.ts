@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { after } from "next/server";
 import { and, eq, isNull } from "drizzle-orm";
-import { CATALOGUE_BY_KEY } from "@valuation/engine";
+import { CATALOGUE_BY_KEY, getProfile } from "@valuation/engine";
 import { requireAdmin, changePassword } from "@/lib/auth";
 import {
   assumption,
@@ -21,6 +21,7 @@ import {
   researchProposal,
   source,
   upload,
+  profileDefault,
 } from "@/lib/db";
 import { audit, diffEntries } from "@/lib/audit";
 import { createIntakeLink } from "@/lib/links";
@@ -53,6 +54,7 @@ export async function createEngagement(fd: FormData) {
     .values({
       clientId: c!.id,
       title: strOrNull(fd.get("title")) ?? "Advisory valuation",
+      profileKey: getProfile(strOrNull(fd.get("profile_key"))).key,
       purpose: strOrNull(fd.get("purpose")),
       valuationDate: strOrNull(fd.get("valuation_date")),
       feeAmount: strOrNull(fd.get("fee")),
@@ -68,6 +70,7 @@ export async function updateEngagement(id: string, fd: FormData) {
   if (!prev) return;
   const next = {
     title: strOrNull(fd.get("title")) ?? prev.title,
+    profileKey: getProfile(strOrNull(fd.get("profile_key")) ?? prev.profileKey).key,
     purpose: strOrNull(fd.get("purpose")),
     scope: strOrNull(fd.get("scope")),
     valuationDate: strOrNull(fd.get("valuation_date")),
@@ -409,4 +412,25 @@ export async function changePasswordAction(fd: FormData) {
   if (next !== String(fd.get("confirm") ?? "")) redirect("/admin/settings?e=New%20passwords%20do%20not%20match");
   const r = await changePassword(me.sub, String(fd.get("current") ?? ""), next);
   redirect(r.ok ? "/admin/settings?ok=password" : `/admin/settings?e=${encodeURIComponent(r.error ?? "Failed")}`);
+}
+
+/* ---------------- Industry profile defaults ---------------- */
+
+export async function saveProfileDefault(profileKey: string, assumptionKey: string, value: number | null) {
+  const me = await requireAdmin();
+  const p = getProfile(profileKey);
+  if (!CATALOGUE_BY_KEY[assumptionKey]) return { ok: false, error: "Unknown assumption" };
+  const [prev] = await db().select().from(profileDefault).where(and(eq(profileDefault.profileKey, p.key), eq(profileDefault.assumptionKey, assumptionKey)));
+  if (value === null) {
+    await db().delete(profileDefault).where(and(eq(profileDefault.profileKey, p.key), eq(profileDefault.assumptionKey, assumptionKey)));
+  } else {
+    if (!Number.isFinite(value)) return { ok: false, error: "Enter a number" };
+    await db()
+      .insert(profileDefault)
+      .values({ profileKey: p.key, assumptionKey, value: String(value), updatedBy: me.email })
+      .onConflictDoUpdate({ target: [profileDefault.profileKey, profileDefault.assumptionKey], set: { value: String(value), updatedBy: me.email, updatedAt: new Date() } });
+  }
+  await audit({ actor: me.email, action: value === null ? "reset" : "update", entity: "profile_default", entityId: `${p.key}:${assumptionKey}`, field: assumptionKey, oldValue: prev ? prev.value : null, newValue: value });
+  revalidatePath("/admin/settings/profiles");
+  return { ok: true };
 }

@@ -9,6 +9,8 @@ import { buildEngineInput } from "./engine-input";
 import { audit } from "./audit";
 import { getBranding } from "./branding";
 import { loadIntake } from "./intake/server";
+import { PROFILE_KPIS } from "./intake/config";
+import { getProfile } from "@valuation/engine";
 import { readStoredFile, storeFile } from "./storage";
 
 // Charts are rasterised server-side; point resvg at the bundled font.
@@ -132,6 +134,21 @@ export async function exportContext(runId: string): Promise<ExportContext> {
       growthPlan: s(growth.plan),
       growthBudget: typeof growth.budget === "number" ? growth.budget : null,
       pendingOffers: offers.has_offers === "yes" ? s(offers.offers_detail) : null,
+      kpis: (PROFILE_KPIS[getProfile(e.profileKey).key] ?? [])
+        .map((f) => {
+          const v = state.sections.operations?.[f.key];
+          if (v === null || v === undefined || v === "") return null;
+          const value =
+            typeof v === "number"
+              ? f.type === "pct"
+                ? `${(v * 100).toFixed(1)}%`
+                : f.type === "money"
+                  ? `EGP ${Math.round(v).toLocaleString("en-US")}`
+                  : v.toLocaleString("en-US")
+              : String(v);
+          return { label: f.label, value };
+        })
+        .filter((x): x is { label: string; value: string } => x !== null),
     },
     sources: srcs.map((x) => ({
       id: x.id,

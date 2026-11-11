@@ -21,6 +21,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         <nav>
           <Link href="/admin">Engagements</Link>
           <Link href="/admin/settings">Settings</Link>
+          <Link href="/admin/settings/profiles">Industry profiles</Link>
           <Link href="/admin/checklist">Pre-send checklist</Link>
         </nav>
         <div className="foot">

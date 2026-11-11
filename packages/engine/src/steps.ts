@@ -775,7 +775,9 @@ export function reconcile(
   const roundedHigh = roundTo(adjustedHigh, rounding);
   const used = methods.filter((x) => x.weight > 0).map((x) => `${x.label} ${(x.weight * 100).toFixed(0)}%`).join(", ");
   let weightsRationale: string;
-  if (youngApplies)
+  if (!used)
+    weightsRationale = "No valuation method can be computed yet with the current inputs; see Open Items. The concluded range shown rests on the asset-based floor only.";
+  else if (youngApplies)
     weightsRationale = `Operating history is ${ctx.input.meta.monthsOfHistory} months (under 36): the DCF carries more weight than market multiples, because trailing earnings do not yet reflect mature performance. Weights: ${used}.`;
   else if (profile.model === "early_stage")
     weightsRationale = `As an early-stage company, the value rests on venture-style methods (expected exit value, comparison with funded peers and recent rounds) rather than current earnings. Weights: ${used}.`;

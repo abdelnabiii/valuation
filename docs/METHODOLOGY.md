@@ -41,6 +41,18 @@ Weighted low / mid / high EV, floored at the asset value → + equity bridge (ca
 ## 9. Sensitivities
 Base-scenario EV recomputed in full for: discount rate ±2pp vs terminal real growth ±1pp; EBITDA margin ±2pp vs real SSS ±4pp; new units per year ±2 vs capex per unit ±20%.
 
+## Industry profiles and additional methods
+- **Operating businesses:** existing revenue grows at a real rate per year (`dcf.<scenario>.growth_y1..5`), derived from the client's planned nominal growth deflated by EGP inflation (upside +2pp, downside −4pp), and confirmed by the advisor. No unit openings.
+- **Net asset value (asset-heavy):** sum of appraised market values of the listed assets (enterprise-value basis). Assets without a market value are open items.
+- **Income capitalisation:** normalized EBITDA ÷ cap rate (sourced); low/high at cap rate ± spread.
+- **Venture capital method:** exit-year revenue × exit EV/revenue (comparables median; Q1/Q3 for low/high) × retention after dilution ÷ (1 + target return)^years. Equity value.
+- **Scorecard method:** median pre-money of comparable funded startups (sourced) × Σ(weight × score). Equity value.
+- **Funding round:** latest priced post-money × (1 + change since the round). Equity value.
+- **Reconciliation with equity methods:** equity results are converted to an enterprise-value equivalent (equity − net-debt bridge), weighted with the other methods, floored at the asset value, then the bridge is added back, so equity methods are not distorted by the bridge.
+- **Customer concentration:** discount suggested from the largest customer's share of revenue (>15% 2.5%, >30% 5%, >50% 7.5%).
+- **Young-company rule:** for profiles that use it, under 36 months of history 40% of the multiples weight moves to the DCF.
+- Assumptions that do not apply to a profile are hidden and never raise open items.
+
 ## Quality rules built in
 - Market data (macro, size premium, salary, comparables) needs a cited, dated source; data older than 30 days is flagged.
 - Judgement defaults stay open items until confirmed. Missing inputs are listed under Open Items and every output is stamped PROVISIONAL until they are resolved or waived with a reason.

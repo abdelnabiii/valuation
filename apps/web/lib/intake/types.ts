@@ -1,5 +1,6 @@
 /** Client-safe intake state shape and pure helpers (completion, checks). */
-import { COST_LINES, REVENUE_CHANNELS, SECTIONS, type SectionDef } from "./sections";
+import type { SectionDef } from "./sections";
+import type { IntakeConfig } from "./config";
 
 export interface UnitRow {
   id: string;
@@ -103,7 +104,8 @@ function defaultEndMonth(state: IntakeState): string {
 
 const filled = (v: unknown) => v !== undefined && v !== null && v !== "" && !(typeof v === "number" && Number.isNaN(v));
 
-export function sectionCompletion(def: SectionDef, s: IntakeState): number {
+export function sectionCompletion(def: SectionDef, s: IntakeState, cfg: IntakeConfig): number {
+  const CH = cfg.channels;
   const data = s.sections[def.key] ?? {};
   const fieldScore = () => {
     const req = (def.fields ?? []).filter((f) => f.required);
@@ -128,7 +130,7 @@ export function sectionCompletion(def: SectionDef, s: IntakeState): number {
         for (const m of months) {
           if (u.openedOn && m < u.openedOn.slice(0, 7)) continue;
           need++;
-          const rev = REVENUE_CHANNELS.some((c) => (s.financials[cellKey(u.id, "revenue", c.key, m)] ?? 0) > 0);
+          const rev = CH.some((c) => (s.financials[cellKey(u.id, "revenue", c.key, m)] ?? 0) > 0);
           const cogs = filled(s.financials[cellKey(u.id, "cogs", null, m)]);
           if (rev && cogs) have++;
         }
@@ -154,11 +156,16 @@ export function sectionCompletion(def: SectionDef, s: IntakeState): number {
       return s.debt.some((d) => d.kind === "cash") || data.none_confirmed ? (s.debt.length || data.none_confirmed ? 1 : 0.5) : s.debt.length ? 0.5 : 0;
     case "uploads":
       return s.uploads.length ? 1 : 0;
+    case "assets": {
+      const rows = (data.rows as { market_value?: number | null }[] | undefined) ?? [];
+      if (!rows.length) return 0;
+      return rows.filter((r) => typeof r.market_value === "number").length / rows.length;
+    }
   }
 }
 
-export function completion(s: IntakeState) {
-  const per = SECTIONS.map((d) => ({ key: d.key, title: d.title, pct: Math.round(sectionCompletion(d, s) * 100) }));
+export function completion(s: IntakeState, cfg: IntakeConfig) {
+  const per = cfg.sections.map((d) => ({ key: d.key, title: d.title, pct: Math.round(sectionCompletion(d, s, cfg) * 100) }));
   const counted = per.filter((p) => p.key !== "uploads");
   const overall = Math.round(counted.reduce((a, b) => a + b.pct, 0) / counted.length);
   return { per, overall };
@@ -172,7 +179,9 @@ export interface Issue {
 }
 
 /** Validation and consistency checks. Never fills gaps; only reports them. */
-export function checks(s: IntakeState): Issue[] {
+export function checks(s: IntakeState, cfg: IntakeConfig): Issue[] {
+  const CH = cfg.channels;
+  const unitsModel = cfg.model === "units";
   const out: Issue[] = [];
   const months = monthsWindow(s);
   const fin = s.financials;
@@ -183,7 +192,7 @@ export function checks(s: IntakeState): Issue[] {
     let gaps = 0;
     let started = false;
     for (const m of months) {
-      const rev = REVENUE_CHANNELS.reduce((a, c) => a + (v(u.id, "revenue", c.key, m) ?? 0), 0);
+      const rev = CH.reduce((a, c) => a + (v(u.id, "revenue", c.key, m) ?? 0), 0);
       if (rev > 0) {
         monthsWithData++;
         if (started && gaps > 0) {
@@ -194,22 +203,22 @@ export function checks(s: IntakeState): Issue[] {
         if (u.openedOn && m < u.openedOn.slice(0, 7))
           out.push({ key: `preopen:${u.id}:${m}`, section: "financials", severity: "warning", message: `${u.name}: revenue in ${m} is before the opening date ${u.openedOn}.` });
         const cogs = v(u.id, "cogs", null, m);
-        if (cogs === undefined)
+        if (cogs === undefined && unitsModel)
           out.push({ key: `nocogs:${u.id}:${m}`, section: "financials", severity: "blocking", message: `${u.name} ${m}: revenue but no cost of goods sold.` });
-        else if (cogs / rev > 0.7 || cogs / rev < 0.12)
+        else if (unitsModel && (cogs / rev > 0.7 || cogs / rev < 0.12))
           out.push({ key: `cogsratio:${u.id}:${m}`, section: "financials", severity: "warning", message: `${u.name} ${m}: COGS is ${((cogs / rev) * 100).toFixed(0)}% of revenue; please check.` });
         const del = v(u.id, "revenue", "delivery", m) ?? 0;
         const comm = v(u.id, "delivery_commission", null, m) ?? 0;
         if (del > 0 && comm === 0 && s.sections.financials?.delivery_reporting !== "net")
           out.push({ key: `nocomm:${u.id}:${m}`, section: "financials", severity: "warning", message: `${u.name} ${m}: delivery sales without delivery-app commission.` });
         const prime = ((cogs ?? 0) + (v(u.id, "labour", null, m) ?? 0)) / rev;
-        if (prime > 0.75)
+        if (unitsModel && prime > 0.75)
           out.push({ key: `prime:${u.id}:${m}`, section: "financials", severity: "warning", message: `${u.name} ${m}: prime cost is ${(prime * 100).toFixed(0)}% of revenue.` });
       } else if (started) gaps++;
       for (const k of Object.keys(fin)) if (k.startsWith(`${u.id}|`) && k.endsWith(`|${m}`) && (fin[k] ?? 0) < 0)
         out.push({ key: `neg:${k}`, section: "financials", severity: "warning", message: `${u.name} ${m}: negative value entered.` });
     }
-    if (monthsWithData === 0)
+    if (monthsWithData === 0 && cfg.model !== "early_stage")
       out.push({ key: `nofin:${u.id}`, section: "financials", severity: "blocking", message: `${u.name}: no monthly financials entered.` });
     // Rent consistency with lease
     const lease = s.leases[u.id];
@@ -224,7 +233,7 @@ export function checks(s: IntakeState): Issue[] {
           message: `${u.name}: rent in the P&L (avg ${Math.round(avg).toLocaleString("en-US")}) differs from lease rent (${Math.round(lease.monthlyRent).toLocaleString("en-US")}) by more than 20%.`,
         });
     }
-    if (!u.openedOn) out.push({ key: `noopen:${u.id}`, section: "units", severity: "blocking", message: `${u.name}: opening date missing.` });
+    if (!u.openedOn && unitsModel) out.push({ key: `noopen:${u.id}`, section: "units", severity: "blocking", message: `${u.name}: opening date missing.` });
   }
   // Operations vs P&L cross-check
   const ops = s.sections.operations ?? {};
@@ -234,7 +243,7 @@ export function checks(s: IntakeState): Issue[] {
     const last3 = months.slice(-3);
     const rev3 =
       last3.reduce(
-        (a, m) => a + s.units.reduce((b, u) => b + REVENUE_CHANNELS.reduce((c, ch) => c + (v(u.id, "revenue", ch.key, m) ?? 0), 0), 0),
+        (a, m) => a + s.units.reduce((b, u) => b + CH.reduce((c, ch) => c + (v(u.id, "revenue", ch.key, m) ?? 0), 0), 0),
         0,
       ) / 3;
     const implied = orders * ticket * 30.4;
@@ -252,6 +261,5 @@ export function checks(s: IntakeState): Issue[] {
     out.push({ key: "growth:budget", section: "growth", severity: "warning", message: "New units are planned but no growth budget is given." });
   if (s.sections.financials?.delivery_reporting === "net")
     out.push({ key: "fin:delivery_net", section: "financials", severity: "warning", message: "Delivery sales are reported net of commission; the advisor must gross them up from app statements." });
-  void COST_LINES;
   return out;
 }

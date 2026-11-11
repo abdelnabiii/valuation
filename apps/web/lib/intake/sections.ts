@@ -21,7 +21,7 @@ export interface SectionDef {
   title: string;
   intro: string;
   /** "fields" sections store JSON; structured ones have custom editors. */
-  kind: "fields" | "units" | "financials" | "leases" | "capex" | "owner" | "debt" | "uploads";
+  kind: "fields" | "units" | "financials" | "leases" | "capex" | "owner" | "debt" | "uploads" | "assets";
   fields?: Field[];
 }
 

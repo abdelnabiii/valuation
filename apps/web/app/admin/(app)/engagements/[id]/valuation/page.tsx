@@ -40,7 +40,7 @@ function KV({ rows }: { rows: [string, string, boolean?][] }) {
 }
 
 function Assume({ id, all, sections, sources, keys }: { id: string; all: ResolvedAssumption[]; sections: string[]; sources: Awaited<ReturnType<typeof sourceOptions>>; keys?: (k: string) => boolean }) {
-  const rows = all.filter((a) => sections.includes(a.section) && (!keys || keys(a.key)));
+  const rows = all.filter((a) => a.relevant && sections.includes(a.section) && (!keys || keys(a.key)));
   if (!rows.length) return null;
   return (
     <details style={{ marginTop: 8 }}>
@@ -68,6 +68,9 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
   const R = r.reconciliation;
   const blocking = r.openItems.filter((o) => o.severity === "blocking" && !o.waived);
   const ff = footballFieldSvg(r, palette, { width: 880 });
+  const model = r.profile.model;
+  const dcfWeight = R.methods.find((m) => m.method === "dcf")?.weight ?? 0;
+  const showDcf = model !== "early_stage" || D.available || dcfWeight > 0;
 
   return (
     <div className="stack">
@@ -76,7 +79,7 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
           <div>
             <h2 style={{ margin: 0 }}>Live calculation</h2>
             <p className="muted" style={{ margin: 0 }}>
-              Recalculated from the current inputs each time this page loads. TTM window {ttm ? `${ttm.from} to ${ttm.to}` : "not available"}; valuation date {input.meta.valuationDate}; {input.meta.monthsOfHistory} months of operating history.
+              Profile: {r.profile.label}. Recalculated from the current inputs each time this page loads. TTM window {ttm ? `${ttm.from} to ${ttm.to}` : "not available"}; valuation date {input.meta.valuationDate}; {input.meta.monthsOfHistory} months of operating history.
             </p>
           </div>
           <form action={save}>
@@ -115,6 +118,7 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
         <Assume id={id} all={r.assumptions} sections={["normalization"]} sources={sources} />
       </Step>
 
+      {model === "units" ? (
       <Step n={2} title="Unit economics" intro="Four-wall results per unit, before head-office costs.">
         <div className="table-wrap" style={{ marginBottom: 14 }}>
           <table>
@@ -151,8 +155,22 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
         />
         <Assume id={id} all={r.assumptions} sections={["unit_economics"]} sources={sources} />
       </Step>
+      ) : (
+        <Step n={2} title="Company performance" intro="Trailing-twelve-month results at company level.">
+          <KV
+            rows={[
+              ["Revenue", egp(N.revenue)],
+              ["Normalized EBITDA", egp(N.normalizedEbitda), true],
+              ["Normalized EBITDA margin", pct(N.normalizedMargin)],
+              ...r.assumptions
+                .filter((a) => a.relevant && /^dcf\.base\.growth_y\d$/.test(a.key))
+                .map((a): [string, string] => [`Base case real revenue growth, year ${a.key.slice(-1)}`, pct(a.value)]),
+            ]}
+          />
+        </Step>
+      )}
 
-      <Step n={3} title="Discounted cash flow" intro="Five years in nominal EGP, three scenarios, mid-year discounting. Terminal value by Gordon growth and by exit multiple.">
+      {showDcf && <Step n={3} title="Discounted cash flow" intro="Five years in nominal EGP, three scenarios, mid-year discounting. Terminal value by Gordon growth and by exit multiple.">
         {DR && (
           <>
             <h3>Discount rate</h3>
@@ -212,7 +230,7 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
           <p className="notice bad">DCF not computed. {D.reason}</p>
         )}
         <Assume id={id} all={r.assumptions} sections={["macro", "discount_rate", "forecast", "scenarios"]} sources={sources} />
-      </Step>
+      </Step>}
 
       <Step n={4} title="Market multiples" intro="Only sourced comparables enter the statistics. No multiple is ever assumed.">
         {M.available ? (
@@ -233,9 +251,56 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
         <Assume id={id} all={r.assumptions} sections={["multiples"]} sources={sources} />
       </Step>
 
-      <Step n={5} title="Young-company approach">
-        <p>{R.weightsRationale}</p>
-      </Step>
+      {model === "asset_heavy" && (
+        <Step n={5} title="Net asset value and income capitalisation" intro="Assets at market value from appraisals; normalized earnings capitalised at a sourced cap rate.">
+          <div className="table-wrap" style={{ marginBottom: 14 }}>
+            <table>
+              <thead><tr><th>Asset</th><th>Type</th><th className="n">Market value</th><th className="n">Book value</th><th>Valued by</th></tr></thead>
+              <tbody>
+                {r.nav.rows.map((a) => (
+                  <tr key={a.name}><td>{a.name}</td><td>{a.kind.replace("_", " ")}</td><td className="n">{a.marketValue === null ? <span className="tag bad">missing</span> : egp(a.marketValue)}</td><td className="n">{egp(a.bookValue)}</td><td className="muted">{a.sourceNote}</td></tr>
+                ))}
+                {!r.nav.rows.length && <tr><td colSpan={5} className="empty">No assets listed in the intake.</td></tr>}
+                <tr className="total"><td>Total at market value</td><td /><td className="n">{egp(r.nav.totalMarketValue)}</td><td /><td /></tr>
+              </tbody>
+            </table>
+          </div>
+          <KV rows={[["Net operating income (normalized EBITDA)", egp(r.nav.incomeCap.noi)], ["Cap rate", pct(r.nav.incomeCap.capRate, 2)], ["Value: low / mid / high", `${egp(r.nav.incomeCap.low)} / ${egp(r.nav.incomeCap.mid)} / ${egp(r.nav.incomeCap.high)}`, true]]} />
+          <Assume id={id} all={r.assumptions} sections={["nav"]} sources={sources} />
+        </Step>
+      )}
+      {model === "early_stage" && (
+        <Step n={5} title="Early-stage methods" intro="Results are equity values. Venture capital method, scorecard method and the latest priced round.">
+          <h3>Venture capital method</h3>
+          <KV
+            rows={[
+              ["Exit-year revenue", egp(r.earlyStage.vc.exitRevenue)],
+              ["Years to exit", String(r.earlyStage.vc.exitYears)],
+              ["Exit EV/Revenue (low / mid / high)", `${mult(r.earlyStage.vc.exitMultipleLow)} / ${mult(r.earlyStage.vc.exitMultiple)} / ${mult(r.earlyStage.vc.exitMultipleHigh)}`],
+              ["Target return / retention after dilution", `${pct(r.earlyStage.vc.targetReturn)} / ${pct(r.earlyStage.vc.retention)}`],
+              ["Equity value today: low / mid / high", `${egp(r.earlyStage.vc.low)} / ${egp(r.earlyStage.vc.mid)} / ${egp(r.earlyStage.vc.high)}`, true],
+            ]}
+          />
+          <h3>Scorecard method</h3>
+          <div className="table-wrap" style={{ marginBottom: 14 }}>
+            <table>
+              <thead><tr><th>Factor</th><th className="n">Weight</th><th className="n">Score</th><th className="n">Product</th></tr></thead>
+              <tbody>
+                {r.earlyStage.scorecard.factors.map((f) => <tr key={f.key}><td>{f.label}</td><td className="n">{pct(f.weight, 0)}</td><td className="n">{pct(f.score, 0)}</td><td className="n">{f.product.toFixed(3)}</td></tr>)}
+                <tr className="total"><td>Base pre-money {egp(r.earlyStage.scorecard.base)} x multiplier {r.earlyStage.scorecard.multiplier.toFixed(3)}</td><td /><td /><td className="n">{egp(r.earlyStage.scorecard.value)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <h3>Latest priced round</h3>
+          <KV rows={[["Post-money", egp(r.earlyStage.round.postMoney)], ["Date", r.earlyStage.round.date ?? "–"], ["Change since the round", pct(r.earlyStage.round.adjustment)], ["Value", egp(r.earlyStage.round.value), true]]} />
+          <Assume id={id} all={r.assumptions} sections={["early_stage"]} sources={sources} />
+        </Step>
+      )}
+      {(model === "units" || model === "operating") && (
+        <Step n={5} title="Method weights">
+          <p>{R.weightsRationale}</p>
+        </Step>
+      )}
 
       <Step n={6} title="Asset-based floor" intro="Equipment, fit-out and inventory at resale value, less liquidation costs.">
         <KV rows={[...r.assetFloor.rows.map((a): [string, string] => [`${a.category.replace("_", "-")}: cost ${egp(a.cost)} at ${pct(a.resalePct, 0)}`, egp(a.value)]), [`Inventory ${egp(r.assetFloor.inventory)} at ${pct(r.assetFloor.inventoryRecoveryPct, 0)}`, egp(r.assetFloor.inventoryValue)], ["Less liquidation costs", egp(-r.assetFloor.liquidationCost)], ["Asset-based floor", egp(r.assetFloor.floor), true]]} />
@@ -256,11 +321,12 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
       </Step>
 
       <Step n={8} title="Reconciliation">
+        {model !== "units" && model !== "operating" && <p>{R.weightsRationale}</p>}
         <div className="table-wrap" style={{ marginBottom: 14 }}>
           <table>
-            <thead><tr><th>Method</th><th className="n">Low</th><th className="n">Mid</th><th className="n">High</th><th className="n">Weight</th></tr></thead>
+            <thead><tr><th>Method (enterprise-value basis)</th><th className="n">Low</th><th className="n">Mid</th><th className="n">High</th><th className="n">Weight</th></tr></thead>
             <tbody>
-              {R.methods.map((m) => <tr key={m.method}><td>{m.label}{!m.available && <span className="tag bad" style={{ marginLeft: 6 }}>not available</span>}</td><td className="n">{egp(m.low)}</td><td className="n">{egp(m.mid)}</td><td className="n">{egp(m.high)}</td><td className="n">{pct(m.weight, 0)}</td></tr>)}
+              {R.methods.map((m) => <tr key={m.method}><td>{m.label}{m.basis === "equity" && <span className="tag" style={{ marginLeft: 6 }}>equity value {egp(m.nativeMid)}</span>}{!m.available && <span className="tag bad" style={{ marginLeft: 6 }}>not available</span>}</td><td className="n">{egp(m.low)}</td><td className="n">{egp(m.mid)}</td><td className="n">{egp(m.high)}</td><td className="n">{pct(m.weight, 0)}</td></tr>)}
               <tr className="total"><td>Enterprise value{R.floorApplied ? " (floored at asset value)" : ""}</td><td className="n">{egp(R.evLow)}</td><td className="n">{egp(R.evMid)}</td><td className="n">{egp(R.evHigh)}</td><td /></tr>
               <tr><td>Net debt and deposits</td><td className="n" colSpan={3}>{egp(r.bridge.netAdjustment)}</td><td /></tr>
               <tr><td>Equity value</td><td className="n">{egp(R.equityLow)}</td><td className="n">{egp(R.equityMid)}</td><td className="n">{egp(R.equityHigh)}</td><td /></tr>
@@ -274,7 +340,7 @@ export default async function Valuation({ params }: { params: Promise<{ id: stri
         <Assume id={id} all={r.assumptions} sections={["reconciliation"]} sources={sources} />
       </Step>
 
-      <Step n={9} title="Sensitivities" intro="Base-scenario enterprise value.">
+      <Step n={9} title="Sensitivities" intro={model === "early_stage" ? "Venture capital method equity value." : "Base-scenario enterprise value."}>
         {r.sensitivities.length && r.sensitivities[0]!.values.length ? (
           <div className="stack">
             {r.sensitivities.map((g) => (

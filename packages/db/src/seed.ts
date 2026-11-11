@@ -61,7 +61,8 @@ const monthsBetween = (a: string, b: string) => {
 };
 
 async function seedDemo() {
-  const existing = await db.select().from(s.client).where(eq(s.client.isDemo, true));
+  // Only reset this demo; other demo clients (e.g. the manufacturing demo) are left alone.
+  const existing = await db.select().from(s.client).where(eq(s.client.name, "Demo: Harbor Lane Coffee (fictional)"));
   for (const c of existing) await db.delete(s.client).where(eq(s.client.id, c.id));
 
   const [c] = await db
