@@ -1,10 +1,11 @@
 /** Nine-slide 16:9 summary deck (pptxgenjs). Figures come from ctx only. */
 import PptxGenJS from "pptxgenjs";
 import { CHANNELS } from "@valuation/engine";
-import { mix, svgToPng } from "../charts";
+import { mix, sensitivityValueLabel, svgToPng } from "../charts";
 import type { ExportContext } from "../context";
-import { CHANNEL_LABELS, fmtAmount, fmtDate, fmtMoney, fmtPct, fmtYears, humanize, officeFont } from "../report/format";
-import { buildCharts, deriveRecommendations, deriveRisks, openItemsActive, spotFx } from "../report/model";
+import { fmtAmount, fmtDate, fmtFactor, fmtMoney, fmtMultiple, fmtPct, fmtYears, humanize, officeFont } from "../report/format";
+import { buildCharts, deriveRecommendations, deriveRisks, openItemsActive, operatingIndicators, spotFx } from "../report/model";
+import { METHOD_SHORT, lowerLabel, methodologySteps, realGrowthPath, wording } from "../report/profile";
 
 type Slide = PptxGenJS.Slide;
 type Cell = PptxGenJS.TableCell;
@@ -36,6 +37,7 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
   const e = ctx.engagement;
   const ccy = e.crossCheckCurrency || "USD";
   const charts = buildCharts(ctx);
+  const wd = wording(ctx);
   const p = charts.palette;
   const t: Theme = {
     font: officeFont(ctx.branding.typeface),
@@ -142,7 +144,7 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
     const ky = 4.5;
     kpi(s, X, ky, kw, "TTM revenue", fmtMoney(n.revenue));
     kpi(s, X + (kw + 0.2), ky, kw, "Normalized EBITDA", fmtMoney(n.normalizedEbitda), `${fmtPct(n.normalizedMargin)} margin`);
-    kpi(s, X + 2 * (kw + 0.2), ky, kw, "Weighted enterprise value (mid)", fmtMoney(rec.evMid), rec.methods.filter((m) => m.weight > 0).map((m) => `${m.method === "dcf" ? "DCF" : humanize(m.method)} ${fmtPct(m.weight)}`).join(", "));
+    kpi(s, X + 2 * (kw + 0.2), ky, kw, "Weighted enterprise value (mid)", fmtMoney(rec.evMid), rec.methods.filter((m) => m.weight > 0).map((m) => `${METHOD_SHORT[m.method] ?? humanize(m.method)} ${fmtPct(m.weight)}`).join(", "));
     kpi(s, X + 3 * (kw + 0.2), ky, kw, "Value adjustments", fmtPct(r.adjustments.combinedDiscount), `Net equity bridge ${fmtMoney(r.bridge.netAdjustment)}`);
     s.addText(`Prepared by ${ctx.branding.advisorName}, ${ctx.branding.firmName}. ${humanize(e.standardOfValue)}, ${humanize(e.premise).toLowerCase()} premise, ${humanize(e.basis).toLowerCase()} basis.`, {
       ...base,
@@ -157,28 +159,28 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
 
   /* 2. Business snapshot ------------------------------------------- */
   {
-    const s = newSlide("Business snapshot", "Company");
+    const s = newSlide("Business snapshot", wd.profile.label);
     const pr = ctx.profile;
     const facts: [string, string][] = [];
     if (pr.concept) facts.push(["Concept", pr.concept]);
     if (pr.founded) facts.push(["Founded", pr.founded]);
-    facts.push(["Trading units", `${ctx.input.units.length} (${ctx.input.units.map((u) => u.name).join(", ")})`]);
+    if (ctx.input.units.length)
+      facts.push([wd.model === "units" ? `Trading ${wd.units}` : "Reporting units", `${ctx.input.units.length} (${ctx.input.units.map((u) => u.name).join(", ")})`]);
     facts.push(["Operating history", `${ctx.input.meta.monthsOfHistory} months`]);
     if (pr.brandAssets) facts.push(["Brand assets", pr.brandAssets]);
-    const ops = ctx.input.operations;
-    if (ops.dailyOrders !== null) facts.push(["Daily orders", fmtAmount(ops.dailyOrders)]);
-    if (ops.averageTicket !== null) facts.push(["Average ticket", `EGP ${fmtAmount(ops.averageTicket)}`]);
-    if (ops.ownerDependencyScore !== null) facts.push(["Owner dependency", `${ops.ownerDependencyScore} / 5`]);
+    for (const k of (pr.kpis ?? []).filter((x) => x && x.label && x.value)) facts.push([k.label, k.value]);
+    for (const k of operatingIndicators(ctx, wd)) facts.push([k.label, k.value]);
+    facts.splice(10);
     if (pr.description) s.addText(pr.description, { ...base, x: X, y: 1.6, w: 5.9, h: 0.8, fontSize: 13, valign: "top" });
     s.addTable(
       facts.map(([k, v]) => [cell(k), cell(v)]).map((row) => row.map((c, i) => ({ ...c, options: { ...c.options, color: i === 0 ? t.neutral : t.text } }))),
       tableOpts(X, 2.55, 5.9, [2.0, 3.9], 11),
     );
-    s.addText("Channel mix, trailing twelve months", { ...base, x: 7.0, y: 1.6, w: 5.7, h: 0.3, fontSize: 12, bold: true, color: t.primary });
+    s.addText("Revenue mix, trailing twelve months", { ...base, x: 7.0, y: 1.6, w: 5.7, h: 0.3, fontSize: 12, bold: true, color: t.primary });
     s.addTable(
       [
         [head("Channel"), head("Revenue (EGP)", "right"), head("Share", "right")],
-        ...CHANNELS.map((c) => [cell(CHANNEL_LABELS[c] ?? c), cell(fmtAmount(n.revenueByChannel[c]), "right"), cell(fmtPct(n.revenue > 0 ? n.revenueByChannel[c] / n.revenue : null), "right")]),
+        ...CHANNELS.map((c) => [cell(wd.channelLabel(c)), cell(fmtAmount(n.revenueByChannel[c]), "right"), cell(fmtPct(n.revenue > 0 ? n.revenueByChannel[c] / n.revenue : null), "right")]),
         [cell("Total", "left", "total"), cell(fmtAmount(n.revenue), "right", "total"), cell(fmtPct(n.revenue > 0 ? 1 : null), "right", "total")],
       ],
       tableOpts(7.0, 2.0, 5.73, [2.4, 2.03, 1.3], 11),
@@ -189,12 +191,14 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
     );
   }
 
-  /* 3. Unit economics ---------------------------------------------- */
-  {
-    const s = newSlide("Unit economics", "Four-wall performance");
+  /* 3. Unit economics / financial profile / traction ---------------- */
+  const kw4 = (CWD - 0.6) / 4;
+  const kx = (i: number) => X + i * (kw4 + 0.2);
+  if (wd.model === "units") {
+    const s = newSlide(`${wd.Unit} economics`, wd.isFnb ? "Four-wall performance" : `${wd.Unit}-level performance`);
     const ue = r.unitEconomics;
     const rows: Cell[][] = [
-      [head("Unit"), head("Months open", "right"), head("TTM sales", "right"), head("Prime cost", "right"), head("Rent", "right"), head("Four-wall EBITDA", "right"), head("Margin", "right"), head("Investment", "right"), head("Payback (yrs)", "right")],
+      [head(wd.Unit), head("Months open", "right"), head("TTM sales", "right"), head(wd.directCost, "right"), head("Rent", "right"), head(wd.unitEbitda, "right"), head("Margin", "right"), head("Investment", "right"), head("Payback (yrs)", "right")],
       ...ue.rows.slice(0, 8).map((u) => [
         cell(u.name),
         cell(u.monthsOpen === null ? "n/a" : String(u.monthsOpen), "right"),
@@ -210,23 +214,113 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
     ];
     s.addTable(rows, tableOpts(X, 1.7, CWD, [2.0, 1.1, 1.45, 1.15, 0.95, 1.6, 1.0, 1.45, 1.43], 11));
     const ky = 4.75;
-    const kw = (CWD - 0.6) / 4;
-    kpi(s, X, ky, kw, "New-unit mature sales", fmtMoney(ue.newUnitMatureSales), "Today's prices");
-    kpi(s, X + kw + 0.2, ky, kw, "Capex per new unit", fmtMoney(ue.newUnitCapex));
-    kpi(s, X + 2 * (kw + 0.2), ky, kw, "Mature four-wall margin", fmtPct(ue.newUnitFourWallMargin));
-    kpi(s, X + 3 * (kw + 0.2), ky, kw, "New-unit payback", ue.newUnitPaybackYears === null ? "n/a" : `${fmtYears(ue.newUnitPaybackYears)} years`, `Ramp ${fmtPct(ue.rampY1)} / ${fmtPct(ue.rampY2)} of mature`);
+    kpi(s, kx(0), ky, kw4, `New-${wd.unit} mature sales`, fmtMoney(ue.newUnitMatureSales), "Today's prices");
+    kpi(s, kx(1), ky, kw4, `Capex per new ${wd.unit}`, fmtMoney(ue.newUnitCapex));
+    kpi(s, kx(2), ky, kw4, `Mature ${wd.unitEbitda.replace(" EBITDA", "").toLowerCase()} margin`, fmtPct(ue.newUnitFourWallMargin));
+    kpi(s, kx(3), ky, kw4, `New-${wd.unit} payback`, ue.newUnitPaybackYears === null ? "n/a" : `${fmtYears(ue.newUnitPaybackYears)} years`, `Ramp ${fmtPct(ue.rampY1)} / ${fmtPct(ue.rampY2)} of mature`);
+  } else if (wd.model === "early_stage") {
+    const s = newSlide("Traction and plan", "Where the business is and where the plan takes it");
+    const es = r.earlyStage;
+    kpi(s, kx(0), 1.7, kw4, "TTM revenue", fmtMoney(n.revenue), `${ctx.input.meta.monthsOfHistory} months of history`);
+    kpi(s, kx(1), 1.7, kw4, "Exit-year revenue (plan)", es.vc.exitRevenue > 0 ? fmtMoney(es.vc.exitRevenue) : "n/a", es.vc.exitYears > 0 ? `In year ${fmtAmount(es.vc.exitYears)}` : undefined);
+    const cagr = n.revenue > 0 && es.vc.exitRevenue > 0 && es.vc.exitYears > 0 ? (es.vc.exitRevenue / n.revenue) ** (1 / es.vc.exitYears) - 1 : null;
+    kpi(s, kx(2), 1.7, kw4, "Implied revenue growth p.a.", fmtPct(cagr), "From TTM to exit-year revenue");
+    kpi(
+      s,
+      kx(3),
+      1.7,
+      kw4,
+      "Last priced round (post-money)",
+      es.round.postMoney !== null ? fmtMoney(es.round.postMoney) : "n/a",
+      es.round.date ? `${fmtDate(es.round.date)}, ${fmtPct(es.round.adjustment)} since` : undefined,
+    );
+    const facts: Cell[][] = [
+      [head("Plan and funding facts"), head("Value", "right")],
+      [cell("Exit EV/Revenue multiple (comparables)"), cell(fmtMultiple(es.vc.exitMultiple), "right")],
+      [cell("Target investor return"), cell(fmtPct(es.vc.targetReturn), "right")],
+      [cell("Retention after future dilution"), cell(fmtPct(es.vc.retention), "right")],
+      [cell("Scorecard multiplier vs typical funded peer"), cell(fmtFactor(es.scorecard.multiplier), "right")],
+      [cell("Median pre-money of funded peers"), cell(es.scorecard.base !== null ? fmtMoney(es.scorecard.base) : "n/a", "right")],
+    ];
+    s.addTable(facts, tableOpts(X, 3.2, 6.0, [4.2, 1.8], 11));
+    const plan = ctx.profile.growthPlan;
+    s.addText(
+      [
+        { text: "Management plan", options: { bold: true, color: t.primary, breakLine: true } },
+        { text: plan || "No growth plan narrative was provided.", options: { color: plan ? t.text : t.neutral } },
+      ],
+      { ...base, x: 7.0, y: 3.2, w: 5.73, h: 2.6, fontSize: 12, valign: "top", fontFace: t.font },
+    );
+  } else {
+    const s = newSlide("Financial profile", wd.profile.label);
+    const yrs = r.dcf.scenarios?.base.years ?? [];
+    const growth = realGrowthPath(r, "base");
+    kpi(s, kx(0), 1.7, kw4, "TTM revenue", fmtMoney(n.revenue));
+    kpi(s, kx(1), 1.7, kw4, "Normalized EBITDA margin", fmtPct(n.normalizedMargin), `EBITDA ${fmtMoney(n.normalizedEbitda)}`);
+    kpi(s, kx(2), 1.7, kw4, "Year-5 revenue (base)", yrs.length ? fmtMoney(yrs[yrs.length - 1]!.revenue) : "n/a", "Nominal EGP");
+    if (wd.model === "asset_heavy")
+      kpi(s, kx(3), 1.7, kw4, "Net asset value", r.nav.available ? fmtMoney(r.nav.totalMarketValue) : "n/a", r.nav.missing.length ? `${r.nav.missing.length} asset(s) without appraisal` : "Market value of assets");
+    else kpi(s, kx(3), 1.7, kw4, "Year-5 EBITDA margin (base)", yrs.length ? fmtPct(yrs[yrs.length - 1]!.ebitdaMargin) : "n/a");
+    if (yrs.length) {
+      s.addTable(
+        [
+          [head("Base scenario"), head("TTM", "right"), ...yrs.map((y) => head(`Year ${y.year}`, "right"))],
+          [cell("Real revenue growth"), cell("", "right"), ...yrs.map((_, i) => cell(fmtPct(growth[i]), "right"))],
+          [cell("EGP inflation"), cell("", "right"), ...yrs.map((y) => cell(fmtPct(y.egpInflation), "right"))],
+          [cell("Revenue (EGP m)"), cell((n.revenue / 1e6).toFixed(1), "right"), ...yrs.map((y) => cell((y.revenue / 1e6).toFixed(1), "right"))],
+          [cell("EBITDA margin"), cell(fmtPct(n.normalizedMargin), "right"), ...yrs.map((y) => cell(fmtPct(y.ebitdaMargin), "right"))],
+          [cell("EBITDA (EGP m)", "left", "total"), cell((n.normalizedEbitda / 1e6).toFixed(1), "right", "total"), ...yrs.map((y) => cell((y.ebitda / 1e6).toFixed(1), "right", "total"))],
+        ],
+        tableOpts(X, 3.2, CWD, [3.13, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5], 11),
+      );
+    } else s.addText(`The forecast is not available. ${r.dcf.reason ?? ""}`, { ...base, x: X, y: 3.2, w: CWD, h: 0.6, fontSize: 13 });
   }
 
   /* 4. Growth plan --------------------------------------------------- */
   {
-    const s = newSlide("Growth plan", "Base scenario");
+    const s = newSlide(wd.model === "early_stage" ? "From exit value to today's value" : "Growth plan", wd.model === "early_stage" ? "Venture capital method" : "Base scenario");
     const yrs = r.dcf.scenarios?.base.years ?? [];
-    if (yrs.length) {
+    const plan = ctx.profile.growthPlan;
+    if (wd.model === "early_stage") {
+      const vc = r.earlyStage.vc;
+      if (vc.available) {
+        s.addTable(
+          [
+            [head("Step"), head("Value", "right")],
+            [cell("Revenue in the exit year (plan)"), cell(fmtMoney(vc.exitRevenue), "right")],
+            [cell(`x exit EV/Revenue multiple`), cell(fmtMultiple(vc.exitMultiple), "right")],
+            [cell("= Exit value"), cell(fmtMoney(vc.exitValue), "right")],
+            [cell("x retention after future dilution"), cell(fmtPct(vc.retention), "right")],
+            [cell(`x discount factor (${fmtPct(vc.targetReturn)} for ${fmtAmount(vc.exitYears)} years)`), cell(fmtFactor(vc.discountFactor), "right")],
+            [cell("= Venture capital method value (equity, mid)", "left", "total"), cell(fmtMoney(vc.mid), "right", "total")],
+            [cell("Range (lower to upper quartile exit multiple)"), cell(`${fmtMoney(vc.low)} – ${fmtMoney(vc.high)}`, "right")],
+          ],
+          tableOpts(X, 1.7, 7.4, [4.9, 2.5], 12),
+        );
+      } else s.addText("The venture capital method is not computed: the exit-year revenue, years to exit or exit multiple is missing.", { ...base, x: X, y: 1.7, w: 7.4, h: 0.8, fontSize: 13 });
+      s.addText(
+        [
+          { text: "Why this method", options: { bold: true, color: t.primary, breakLine: true } },
+          { text: "An early-stage company's current earnings do not reflect its plan. The VC method values the business from the exit an investor expects, discounted at the return that investor requires for the risk.", options: { breakLine: true } },
+          ...(plan ? [{ text: " ", options: { breakLine: true } }, { text: "Management plan: ", options: { bold: true, color: t.primary } }, { text: plan }] : []),
+        ],
+        { ...base, x: 8.4, y: 1.7, w: 4.33, h: 4.5, fontSize: 11, valign: "top", fontFace: t.font },
+      );
+    } else if (yrs.length) {
+      const units = wd.model === "units";
+      const growth = realGrowthPath(r, "base");
       s.addTable(
         [
           [head(""), ...yrs.map((y) => head(`Year ${y.year}`, "right"))],
-          [cell("New units opened"), ...yrs.map((y) => cell(String(y.newUnitsOpened), "right"))],
-          [cell("Cumulative new units"), ...yrs.map((y) => cell(String(y.cumulativeNewUnits), "right"))],
+          ...(units
+            ? [
+                [cell(`New ${wd.units} opened`), ...yrs.map((y) => cell(String(y.newUnitsOpened), "right"))],
+                [cell(`Cumulative new ${wd.units}`), ...yrs.map((y) => cell(String(y.cumulativeNewUnits), "right"))],
+              ]
+            : [
+                [cell("Real revenue growth"), ...yrs.map((_, i) => cell(fmtPct(growth[i]), "right"))],
+                [cell("EGP inflation"), ...yrs.map((y) => cell(fmtPct(y.egpInflation), "right"))],
+              ]),
           [cell("Revenue (EGP m)"), ...yrs.map((y) => cell((y.revenue / 1e6).toFixed(1), "right"))],
           [cell("EBITDA (EGP m)"), ...yrs.map((y) => cell((y.ebitda / 1e6).toFixed(1), "right"))],
           [cell("EBITDA margin"), ...yrs.map((y) => cell(fmtPct(y.ebitdaMargin), "right"))],
@@ -234,21 +328,24 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
         ],
         tableOpts(X, 1.7, 6.0, [2.25, 0.75, 0.75, 0.75, 0.75, 0.75], 11),
       );
+      const labels = yrs.map((y) => `Year ${y.year}`);
       s.addChart(
         pptx.ChartType.bar,
-        [
-          { name: "Existing units", labels: yrs.map((y) => `Year ${y.year}`), values: yrs.map((y) => Math.round(y.existingRevenue / 1e5) / 10) },
-          { name: "New units", labels: yrs.map((y) => `Year ${y.year}`), values: yrs.map((y) => Math.round(y.newUnitRevenue / 1e5) / 10) },
-        ],
+        units
+          ? [
+              { name: `Existing ${wd.units}`, labels, values: yrs.map((y) => Math.round(y.existingRevenue / 1e5) / 10) },
+              { name: `New ${wd.units}`, labels, values: yrs.map((y) => Math.round(y.newUnitRevenue / 1e5) / 10) },
+            ]
+          : [{ name: "Revenue", labels, values: yrs.map((y) => Math.round(y.revenue / 1e5) / 10) }],
         {
           x: 7.0,
           y: 1.6,
           w: 5.73,
           h: 4.3,
           barDir: "col",
-          barGrouping: "stacked",
-          chartColors: [t.primary, t.accent],
-          showLegend: true,
+          barGrouping: units ? "stacked" : "clustered",
+          chartColors: units ? [t.primary, t.accent] : [t.primary],
+          showLegend: units,
           legendPos: "b",
           legendFontFace: t.font,
           legendFontSize: 10,
@@ -269,20 +366,16 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
           titleColor: t.primary,
         },
       );
+      const note = units
+        ? `Each new ${wd.unit} is modelled at ${fmtMoney(r.unitEconomics.newUnitMatureSales)} mature sales (today's prices) and ${fmtMoney(r.unitEconomics.newUnitCapex)} capex, ramping at ${fmtPct(r.unitEconomics.rampY1)} in year 1 and ${fmtPct(r.unitEconomics.rampY2)} in year 2.`
+        : `Company-level forecast from TTM revenue of ${fmtMoney(n.revenue)}: real growth above EGP inflation, with the EBITDA margin moving from ${fmtPct(n.normalizedMargin)} to ${fmtPct(yrs[yrs.length - 1]!.ebitdaMargin)} by year 5.`;
+      s.addText(
+        [...(plan ? [{ text: "Management plan: ", options: { bold: true, color: t.primary } }, { text: plan, options: { breakLine: true } }] : []), { text: note, options: { color: t.neutral } }],
+        { ...base, x: X, y: 4.75, w: 6.0, h: 1.2, fontSize: 11, valign: "top", fontFace: t.font },
+      );
     } else {
       s.addText(`The DCF forecast is not available. ${r.dcf.reason ?? ""}`, { ...base, x: X, y: 1.7, w: 6, h: 0.6, fontSize: 13 });
     }
-    const plan = ctx.profile.growthPlan;
-    s.addText(
-      [
-        ...(plan ? [{ text: "Management plan: ", options: { bold: true, color: t.primary } }, { text: plan, options: { breakLine: true } }] : []),
-        {
-          text: `Each new unit is modelled at ${fmtMoney(r.unitEconomics.newUnitMatureSales)} mature sales (today's prices) and ${fmtMoney(r.unitEconomics.newUnitCapex)} capex, ramping at ${fmtPct(r.unitEconomics.rampY1)} in year 1 and ${fmtPct(r.unitEconomics.rampY2)} in year 2.`,
-          options: { color: t.neutral },
-        },
-      ],
-      { ...base, x: X, y: 4.75, w: 6.0, h: 1.2, fontSize: 11, valign: "top", fontFace: t.font },
-    );
   }
 
   /* 5. Valuation range ---------------------------------------------- */
@@ -295,7 +388,7 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
     s.addTable(
       [
         [head("Method (EV, EGP m)"), head("Mid", "right"), head("Weight", "right")],
-        ...rec.methods.map((m) => [cell(m.label), cell(m.available ? (m.mid / 1e6).toFixed(1) : "n/a", "right"), cell(fmtPct(m.weight), "right")]),
+        ...rec.methods.map((m) => [cell(m.label.replace(/\s*\([^)]*\)\s*$/, "") + (m.basis === "equity" ? " *" : "")), cell(m.available ? (m.mid / 1e6).toFixed(1) : "n/a", "right"), cell(fmtPct(m.weight), "right")]),
         [cell("Weighted EV", "left", "total"), cell((rec.evMid / 1e6).toFixed(1), "right", "total"), cell(fmtPct(1), "right", "total")],
       ],
       tableOpts(9.0, 1.7, 3.73, [2.03, 0.8, 0.9], 10),
@@ -304,7 +397,8 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
       [
         { text: "Concluded equity value", options: { bold: true, color: t.primary, breakLine: true } },
         { text: `${fmtMoney(rec.roundedLow)} – ${fmtMoney(rec.roundedHigh)}`, options: { breakLine: true } },
-        { text: `after net bridge of ${fmtMoney(r.bridge.netAdjustment)} and ${fmtPct(r.adjustments.combinedDiscount)} value adjustments.`, options: { color: t.neutral } },
+        { text: `after net bridge of ${fmtMoney(r.bridge.netAdjustment)} and ${fmtPct(r.adjustments.combinedDiscount)} value adjustments.`, options: { color: t.neutral, breakLine: rec.methods.some((m) => m.basis === "equity") } },
+        ...(rec.methods.some((m) => m.basis === "equity") ? [{ text: "* Equity-value method, shown as EV equivalent (equity value less the net bridge).", options: { color: t.neutral, fontSize: 9 } }] : []),
       ],
       { ...base, x: 9.0, y: 4.1, w: 3.73, h: 1.3, fontSize: 11, valign: "top", fontFace: t.font },
     );
@@ -314,28 +408,19 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
   /* 6. Methodology --------------------------------------------------- */
   {
     const s = newSlide("Methodology", `${humanize(e.standardOfValue)} | ${humanize(e.premise)} | ${humanize(e.basis)}`);
-    const steps: [string, string][] = [
-      ["Normalization", "Addbacks to SDE, less a market-rate manager, to normalized EBITDA."],
-      ["Unit economics", "Four-wall margin, prime cost, rent and payback per unit."],
-      ["Discount rate", ctx.input.meta.discountRateMethod === "usd_buildup" ? "USD build-up translated to EGP by inflation differential." : "EGP T-bill build-up."],
-      ["DCF", "Five-year forecast, three probability-weighted scenarios, blended terminal value."],
-      ["Multiples", "EV/EBITDA, EV/Revenue, Price/SDE from sourced comparables."],
-      ["Asset floor", "Recoverable value of fit-out, equipment and inventory, net of liquidation costs."],
-      ["Adjustments", "Marketability, key-person, lease, delivery-app and FX discounts."],
-      ["Bridge and reconciliation", "Weighted EV, floor test, net debt and deposits to equity, rounded."],
-      ["Sensitivities", "Rate, growth, margin, same-store sales, units and capex."],
-    ];
-    const cw = (CWD - 0.5) / 3;
+    const steps: [string, string][] = methodologySteps(ctx).slice(0, 12).map((x) => [x.title, x.short]);
+    const nCols = steps.length > 9 ? 4 : 3;
+    const cw = (CWD - 0.25 * (nCols - 1)) / nCols;
     const ch = 1.55;
     steps.forEach(([title, txt], i) => {
-      const col = i % 3;
-      const row = Math.floor(i / 3);
+      const col = i % nCols;
+      const row = Math.floor(i / nCols);
       const x = X + col * (cw + 0.25);
       const y = 1.65 + row * (ch + 0.15);
       s.addShape(pptx.ShapeType.line, { x, y, w: cw, h: 0, line: { color: t.rule, width: 0.75 } });
       s.addText(String(i + 1), { ...base, x, y: y + 0.12, w: 0.45, h: 0.45, fontSize: 20, bold: true, color: t.accent });
       s.addText(title, { ...base, x: x + 0.5, y: y + 0.15, w: cw - 0.5, h: 0.35, fontSize: 13, bold: true, color: t.primary });
-      s.addText(txt, { ...base, x: x + 0.5, y: y + 0.55, w: cw - 0.5, h: 0.85, fontSize: 11, valign: "top" });
+      s.addText(txt, { ...base, x: x + 0.5, y: y + 0.55, w: cw - 0.5, h: 0.85, fontSize: nCols > 3 ? 10 : 11, valign: "top", fit: "shrink" });
     });
   }
 
@@ -355,24 +440,27 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
 
   /* 8. Sensitivities -------------------------------------------------- */
   {
-    const g = charts.heatmaps.find((h) => h.grid.key === "rate_growth") ?? charts.heatmaps[0];
-    const s = newSlide(g ? g.grid.title : "Sensitivities", "Sensitivity of base-scenario enterprise value");
-    if (g && g.grid.values.length) {
+    const avail = charts.heatmaps.filter((h) => h.grid.values.length);
+    const g = avail.find((h) => h.grid.key === "rate_growth") ?? avail[0];
+    const s = newSlide(g ? g.grid.title : "Sensitivities", g ? `Sensitivity of ${lowerLabel(sensitivityValueLabel(g.grid.key))}` : "Sensitivity analysis");
+    if (g) {
       const iw = 8.4;
       const ih = (iw * g.chart.height) / g.chart.width;
       s.addImage({ data: png(g.chart.svg, iw), x: X, y: 1.7, w: iw, h: ih });
       const flat = g.grid.values.flat();
+      const others = avail.filter((h) => h !== g).map((h) => h.grid.title);
       s.addText(
         [
           { text: "Reading the table", options: { bold: true, color: t.primary, breakLine: true } },
-          { text: "Each cell re-runs the base-scenario DCF with the discount rate and terminal real growth shifted as shown; all else held constant.", options: { breakLine: true } },
+          { text: `Each cell re-computes the ${lowerLabel(sensitivityValueLabel(g.grid.key))} with ${lowerLabel(g.grid.rowLabel)} (rows) and ${lowerLabel(g.grid.colLabel)} (columns) as shown; all else held constant.`, options: { breakLine: true } },
           { text: " ", options: { breakLine: true } },
-          { text: `Range across the grid: EGP ${(Math.min(...flat) / 1e6).toFixed(1)}m to EGP ${(Math.max(...flat) / 1e6).toFixed(1)}m enterprise value, before the equity bridge and value adjustments.`, options: { color: t.neutral } },
+          { text: `Range across the grid: EGP ${(Math.min(...flat) / 1e6).toFixed(1)}m to EGP ${(Math.max(...flat) / 1e6).toFixed(1)}m, before ${g.grid.key === "vc_return_multiple" ? "" : "the equity bridge and "}value adjustments.`, options: { color: t.neutral, breakLine: others.length > 0 } },
+          ...(others.length ? [{ text: " ", options: { breakLine: true } }, { text: `Further sensitivities in the report: ${others.join("; ")}.`, options: { color: t.neutral } }] : []),
         ],
-        { ...base, x: 9.3, y: 1.75, w: 3.43, h: 3.5, fontSize: 11, valign: "top", fontFace: t.font },
+        { ...base, x: 9.3, y: 1.75, w: 3.43, h: 4.6, fontSize: 11, valign: "top", fontFace: t.font },
       );
     } else {
-      s.addText("Sensitivities are not available because the DCF was not computed.", { ...base, x: X, y: 1.7, w: CWD, h: 0.5, fontSize: 13 });
+      s.addText("Sensitivities are not available because the underlying method was not computed.", { ...base, x: X, y: 1.7, w: CWD, h: 0.5, fontSize: 13 });
     }
   }
 
@@ -387,7 +475,13 @@ export async function renderDeck(ctx: ExportContext): Promise<Uint8Array> {
     steps.push("Confirm the key assumptions and the growth plan with management.");
     const recs = deriveRecommendations(ctx).filter((x) => x.key !== "open_items").slice(0, 3);
     for (const x of recs) steps.push(`${x.title}.`);
-    steps.push("Prepare a data room with monthly management accounts, leases and supplier contracts.");
+    steps.push(
+      wd.model === "early_stage"
+        ? "Prepare a data room with the capitalisation table, shareholder agreements, business plan and monthly traction metrics."
+        : wd.model === "asset_heavy"
+          ? "Prepare a data room with title documents, appraisals, tenancy schedules and management accounts."
+          : "Prepare a data room with monthly management accounts, key customer and supplier contracts and leases.",
+    );
     steps.push("Agree the transaction process and timetable with the advisor.");
     const listX = hasAsk ? 7.0 : X;
     const listW = hasAsk ? 5.73 : CWD;

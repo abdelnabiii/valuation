@@ -11,10 +11,9 @@ import { CATALOGUE_BY_KEY, CHANNELS, type EngineResult, type SensitivityGrid } f
 import { footballFieldSvg, heatmapSvg, paletteFromBranding, type ChartPalette, type SvgChart } from "../charts";
 import { SECTION_LABELS, type ExportContext } from "../context";
 import { basisOfValueBlocks } from "./basis";
+import { assumptionValue, dcfRelied, listJoin, lowerLabel, methodologySteps, methodWeight, realGrowthPath, wording, type Wording } from "./profile";
 import {
   ADDBACK_LABELS,
-  CHANNEL_LABELS,
-  COST_LABELS,
   ORIGIN_LABELS,
   fmtAmount,
   fmtByUnit,
@@ -156,19 +155,34 @@ export function deriveRecommendations(ctx: ExportContext): Recommendation[] {
   const r = ctx.result;
   const n = r.normalization;
   const ops = ctx.input.operations;
+  const w = wording(ctx);
   const out: Recommendation[] = [];
+  const adjRow = (k: string) => r.adjustments.rows.find((a) => a.key === k);
 
   const ds = deliveryShare(r);
-  if (ds > 0.2) {
+  if (adjRow("adj.delivery") && ds > 0.2) {
     const comm = n.costs.delivery_commission;
     const commPct = n.revenueByChannel.delivery > 0 ? comm / n.revenueByChannel.delivery : null;
+    const ch = w.channelLabel("delivery");
     out.push({
       key: "delivery",
-      title: "Reduce reliance on delivery apps",
-      text:
-        `Delivery apps generate ${fmtPct(ds)} of trailing-twelve-month revenue` +
-        (comm > 0 && commPct !== null ? `, with commission costs of ${fmtMoney(comm)} (${fmtPct(commPct)} of delivery revenue)` : "") +
-        ". We recommend growing direct channels (dine-in, own ordering, wholesale) to reduce platform dependency and commission leakage.",
+      title: w.isFnb ? "Reduce reliance on delivery apps" : `Reduce ${lowerLabel(w.profile.platformLabel)}`,
+      text: w.isFnb
+        ? `Delivery apps generate ${fmtPct(ds)} of trailing-twelve-month revenue` +
+          (comm > 0 && commPct !== null ? `, with commission costs of ${fmtMoney(comm)} (${fmtPct(commPct)} of delivery revenue)` : "") +
+          ". We recommend growing direct channels (dine-in, own ordering, wholesale) to reduce platform dependency and commission leakage."
+        : `${ch} generate ${fmtPct(ds)} of trailing-twelve-month revenue` +
+          (comm > 0 && commPct !== null ? `, with commission costs of ${fmtMoney(comm)} (${fmtPct(commPct)} of that revenue)` : "") +
+          `. We recommend growing the other channels (${lowerLabel(w.channelLabel("dine_in"))}, ${lowerLabel(w.channelLabel("online"))}) to reduce this dependency.`,
+    });
+  }
+
+  const conc = adjRow("adj.concentration");
+  if (conc && ops.topCustomerShare != null && ops.topCustomerShare > 0.15) {
+    out.push({
+      key: "concentration",
+      title: "Reduce customer concentration",
+      text: `The largest customer accounts for ${fmtPct(ops.topCustomerShare)} of revenue${conc.pct > 0 ? `, and a discount of ${fmtPct(conc.pct)} is applied for it` : ""}. We recommend broadening the customer base and securing multi-year contracts with the largest customers.`,
     });
   }
 
@@ -176,41 +190,56 @@ export function deriveRecommendations(ctx: ExportContext): Recommendation[] {
     out.push({
       key: "management",
       title: "Build a management layer",
-      text: `Owner dependency is scored ${ops.ownerDependencyScore} out of 5. We recommend appointing a general manager, documenting operating procedures and delegating supplier and staff relationships so the business can operate without the owner.`,
+      text: `Owner dependency is scored ${ops.ownerDependencyScore} out of 5. We recommend appointing a general manager, documenting operating procedures and delegating supplier, customer and staff relationships so the business can operate without the owner.`,
     });
   }
 
-  const wly = weightedLeaseYears(ctx);
-  const shortLeases = ctx.input.units.filter(
-    (u) => u.lease && ((u.lease.yearsRemaining !== null && u.lease.yearsRemaining < 5) || u.lease.renewalRight === false),
-  );
-  if ((wly !== null && wly < 5) || shortLeases.length) {
-    const details = shortLeases.map((u) => {
-      const yrs = u.lease!.yearsRemaining;
-      const parts = [yrs !== null ? `${yrs.toFixed(1)} years remaining` : null, u.lease!.renewalRight === false ? "no renewal right" : null].filter(Boolean);
-      return `${u.name} (${parts.join(", ")})`;
-    });
+  const nwc = assumptionValue(r, "dcf.nwc_pct");
+  if ((w.model === "operating" || w.model === "asset_heavy") && nwc !== null && nwc >= 0.15) {
     out.push({
-      key: "leases",
-      title: "Extend leases and secure renewal rights",
-      text:
-        (wly !== null ? `The sales-weighted lease term remaining is ${wly.toFixed(1)} years. ` : "") +
-        (details.length ? `Units to address: ${details.join("; ")}. ` : "") +
-        "We recommend negotiating extensions or renewal options before any transaction, as buyers price the risk of losing a trading site.",
+      key: "working_capital",
+      title: "Release working capital",
+      text: `The forecast assumes net working capital of ${fmtPct(nwc)} of incremental revenue, so growth absorbs cash. We recommend tightening receivable collection, inventory levels and supplier terms; each point of working capital released raises free cash flow.`,
     });
   }
 
-  const prime = n.revenue > 0 ? (n.costs.cogs + n.costs.labour) / n.revenue : 0;
-  const highPrimeUnits = r.unitEconomics.rows.filter((u) => u.primeCostPct > 0.6);
-  if (prime > 0.6 || highPrimeUnits.length) {
-    out.push({
-      key: "prime_cost",
-      title: "Run a prime-cost programme",
-      text:
-        `Prime cost (COGS plus labour) is ${fmtPct(prime)} of revenue` +
-        (highPrimeUnits.length ? `; units above 60%: ${highPrimeUnits.map((u) => `${u.name} ${fmtPct(u.primeCostPct)}`).join(", ")}` : "") +
-        ". We recommend a structured programme covering menu engineering, supplier terms, waste control and labour scheduling.",
-    });
+  if (adjRow("adj.lease_risk")) {
+    const wly = weightedLeaseYears(ctx);
+    const shortLeases = ctx.input.units.filter(
+      (u) => u.lease && ((u.lease.yearsRemaining !== null && u.lease.yearsRemaining < 5) || u.lease.renewalRight === false),
+    );
+    if ((wly !== null && wly < 5) || shortLeases.length) {
+      const details = shortLeases.map((u) => {
+        const yrs = u.lease!.yearsRemaining;
+        const parts = [yrs !== null ? `${yrs.toFixed(1)} years remaining` : null, u.lease!.renewalRight === false ? "no renewal right" : null].filter(Boolean);
+        return `${u.name} (${parts.join(", ")})`;
+      });
+      out.push({
+        key: "leases",
+        title: "Extend leases and secure renewal rights",
+        text:
+          (wly !== null ? `The sales-weighted lease term remaining is ${wly.toFixed(1)} years. ` : "") +
+          (details.length ? `${w.model === "units" ? w.Units : "Sites"} to address: ${details.join("; ")}. ` : "") +
+          "We recommend negotiating extensions or renewal options before any transaction, as buyers price the risk of losing a site.",
+      });
+    }
+  }
+
+  if (w.model === "units") {
+    const prime = n.revenue > 0 ? (n.costs.cogs + n.costs.labour) / n.revenue : 0;
+    const highPrimeUnits = r.unitEconomics.rows.filter((u) => u.primeCostPct > 0.6);
+    if (prime > 0.6 || highPrimeUnits.length) {
+      out.push({
+        key: "prime_cost",
+        title: w.isFnb ? "Run a prime-cost programme" : "Run a direct-cost programme",
+        text:
+          `${w.directCost} (COGS plus labour) is ${fmtPct(prime)} of revenue` +
+          (highPrimeUnits.length ? `; ${w.units} above 60%: ${highPrimeUnits.map((u) => `${u.name} ${fmtPct(u.primeCostPct)}`).join(", ")}` : "") +
+          (w.isFnb
+            ? ". We recommend a structured programme covering menu engineering, supplier terms, waste control and labour scheduling."
+            : ". We recommend a structured programme covering pricing, supplier terms, shrinkage and labour scheduling."),
+      });
+    }
   }
 
   if (ops.importedCogsShare !== null && ops.importedCogsShare > 0.3) {
@@ -221,29 +250,57 @@ export function deriveRecommendations(ctx: ExportContext): Recommendation[] {
     });
   }
 
-  const highRent = r.unitEconomics.rows.filter((u) => u.rentPct > 0.15);
-  if (highRent.length) {
+  if (w.model === "units") {
+    const highRent = r.unitEconomics.rows.filter((u) => u.rentPct > 0.15);
+    if (highRent.length) {
+      out.push({
+        key: "rent",
+        title: "Address occupancy cost",
+        text: `Rent exceeds 15% of sales at ${highRent.map((u) => `${u.name} (${fmtPct(u.rentPct)})`).join(", ")}. We recommend renegotiating rent or turnover-rent structures and applying an occupancy-cost ceiling to new sites.`,
+      });
+    }
+    const pb = r.unitEconomics.newUnitPaybackYears;
+    if (pb !== null && pb > 4) {
+      out.push({
+        key: "payback",
+        title: `Review the new-${w.unit} format`,
+        text: `Estimated new-${w.unit} payback is ${fmtYears(pb)} years. We recommend reviewing fit-out specification and site size before committing to the expansion plan.`,
+      });
+    }
+  }
+
+  if (w.model === "asset_heavy" && r.nav.missing.length) {
     out.push({
-      key: "rent",
-      title: "Address occupancy cost",
-      text: `Rent exceeds 15% of sales at ${highRent.map((u) => `${u.name} (${fmtPct(u.rentPct)})`).join(", ")}. We recommend renegotiating rent or turnover-rent structures and applying an occupancy-cost ceiling to new sites.`,
+      key: "appraisals",
+      title: "Obtain independent appraisals",
+      text: `No market value is recorded for ${listJoin(r.nav.missing)}. We recommend commissioning independent appraisals so every asset in the net asset value is supported by a dated valuer opinion.`,
     });
   }
 
-  const pb = r.unitEconomics.newUnitPaybackYears;
-  if (pb !== null && pb > 4) {
-    out.push({
-      key: "payback",
-      title: "Review the new-unit format",
-      text: `Estimated new-unit payback is ${fmtYears(pb)} years. We recommend reviewing fit-out specification and site size before committing to the expansion plan.`,
-    });
+  if (w.model === "early_stage") {
+    const vc = r.earlyStage.vc;
+    if (vc.available)
+      out.push({
+        key: "plan_evidence",
+        title: "Evidence the plan behind the exit value",
+        text:
+          `The venture capital method rests on revenue of ${fmtMoney(vc.exitRevenue)} in year ${fmtAmount(vc.exitYears)}` +
+          (n.revenue > 0 ? `, against trailing-twelve-month revenue of ${fmtMoney(n.revenue)}` : "") +
+          ". We recommend supporting the plan with monthly traction metrics, signed pipeline and unit economics, so investors can test the path to the exit-year revenue.",
+      });
+    if (r.earlyStage.round.available && r.earlyStage.round.date)
+      out.push({
+        key: "round",
+        title: "Keep the funding record current",
+        text: `The latest priced round dates from ${fmtDate(r.earlyStage.round.date)}. We recommend keeping a clean capitalisation table and documenting progress since the round, as investors will re-test the round price against it.`,
+      });
   }
 
   if (ctx.input.meta.monthsOfHistory < 36) {
     out.push({
       key: "history",
       title: "Build a documented trading record",
-      text: `The business has ${ctx.input.meta.monthsOfHistory} months of operating history. We recommend producing monthly management accounts per unit and reconciling them to tax filings, so future valuations can rely more on trailing earnings.`,
+      text: `The business has ${ctx.input.meta.monthsOfHistory} months of operating history. We recommend producing monthly management accounts${w.model === "units" ? ` per ${w.unit}` : ""} and reconciling them to tax filings, so future valuations can rely more on trailing earnings.`,
     });
   }
 
@@ -273,17 +330,29 @@ export interface RiskItem {
   mitigant: string | null;
 }
 
-const MITIGANT_FOR_ADJ: Record<string, string> = {
-  "adj.dlom": "Inherent to a private-company interest; reduced by audited accounts and a well-organised data room.",
-  "adj.key_person": "Build a management layer and document operating procedures.",
-  "adj.lease_risk": "Negotiate lease extensions and renewal rights.",
-  "adj.delivery": "Grow direct channels and own ordering.",
-  "adj.fx": "Local sourcing, longer supply contracts and price pass-through.",
-};
+function mitigantFor(key: string, w: Wording): string | null {
+  switch (key) {
+    case "adj.dlom":
+      return "Inherent to a private-company interest; reduced by audited accounts and a well-organised data room.";
+    case "adj.key_person":
+      return "Build a management layer and document operating procedures.";
+    case "adj.lease_risk":
+      return "Negotiate lease extensions and renewal rights.";
+    case "adj.delivery":
+      return w.isFnb ? "Grow direct channels and own ordering." : "Diversify revenue across the other channels.";
+    case "adj.fx":
+      return "Local sourcing, longer supply contracts and price pass-through.";
+    case "adj.concentration":
+      return "Broaden the customer base and secure multi-year contracts.";
+    default:
+      return null;
+  }
+}
 
 /** Facts-only risk list: value adjustments applied, method caveats and open items. */
 export function deriveRisks(ctx: ExportContext): RiskItem[] {
   const r = ctx.result;
+  const w = wording(ctx);
   const out: RiskItem[] = [];
   for (const a of r.adjustments.rows) {
     if (a.pct > 0)
@@ -291,23 +360,78 @@ export function deriveRisks(ctx: ExportContext): RiskItem[] {
         key: a.key,
         title: a.label,
         fact: `${a.rationale} A discount of ${fmtPct(a.pct)} is applied.`,
-        mitigant: MITIGANT_FOR_ADJ[a.key] ?? null,
+        mitigant: mitigantFor(a.key, w),
       });
   }
+  const nwc = assumptionValue(r, "dcf.nwc_pct");
+  if ((w.model === "operating" || w.model === "asset_heavy") && nwc !== null && nwc >= 0.15)
+    out.push({
+      key: "working_capital",
+      title: "Working capital intensity",
+      fact: `Net working capital is assumed at ${fmtPct(nwc)} of incremental revenue, so revenue growth consumes cash before it produces it.`,
+      mitigant: "Tighter credit control, inventory management and supplier terms.",
+    });
   const base = r.dcf.scenarios?.base;
-  if (base && base.tvShareOfEv > 0.5)
+  if (dcfRelied(r) && base && base.tvShareOfEv > 0.5)
     out.push({
       key: "tv_share",
       title: "Terminal value concentration",
       fact: `Terminal value accounts for ${fmtPct(base.tvShareOfEv)} of base-scenario DCF enterprise value.`,
-      mitigant: "Delivery against the forecast in the early years reduces reliance on the terminal value.",
+      mitigant: "Meeting the forecast in the early years reduces reliance on the terminal value.",
     });
-  if (!r.dcf.available) out.push({ key: "dcf_na", title: "DCF not computed", fact: r.dcf.reason ?? "DCF not available.", mitigant: "Provide the missing inputs." });
-  if (!r.multiples.available)
+  if (w.model === "early_stage") {
+    const vc = r.earlyStage.vc;
+    if (vc.available)
+      out.push({
+        key: "exit_dependence",
+        title: "Dependence on the plan and exit",
+        fact: `The venture capital method assumes revenue of ${fmtMoney(vc.exitRevenue)} in year ${fmtAmount(vc.exitYears)} and an exit at ${fmtMultiple(vc.exitMultiple)} EV/Revenue; value falls if the plan or exit is delayed or smaller.`,
+        mitigant: "Track progress against the plan and refresh the valuation at each round.",
+      });
+    if (vc.available)
+      out.push({
+        key: "future_funding",
+        title: "Dependence on future funding",
+        fact: `Existing holders are assumed to retain ${fmtPct(vc.retention)} after future funding rounds; more or larger rounds would dilute them further.`,
+        mitigant: "Secure runway and plan the funding needed to reach the exit-year revenue.",
+      });
+  }
+  if (w.model === "asset_heavy") {
+    if (r.nav.missing.length)
+      out.push({
+        key: "nav_missing",
+        title: "Assets without appraisals",
+        fact: `No market value is recorded for ${listJoin(r.nav.missing)}; these assets are excluded from the net asset value.`,
+        mitigant: "Commission independent appraisals.",
+      });
+    const g = r.sensitivities.find((x) => x.key === "cap_noi");
+    const ic = r.nav.incomeCap;
+    if (ic.available && g && g.values.length) {
+      const r0 = g.rows.indexOf(0);
+      const c0 = g.cols.indexOf(0);
+      const up = g.rows.findIndex((x) => x > 0);
+      if (r0 >= 0 && c0 >= 0 && up >= 0) {
+        const base0 = g.values[r0]![c0]!;
+        const v = g.values[up]![c0]!;
+        out.push({
+          key: "cap_rate",
+          title: "Cap-rate sensitivity",
+          fact: `A ${fmtPct(g.rows[up]!).replace("%", "")} pp rise in the ${fmtPct(ic.capRate)} cap rate lowers the income-capitalisation value from ${fmtMoney(base0)} to ${fmtMoney(v)} (${fmtPct(base0 > 0 ? v / base0 - 1 : null)}).`,
+          mitigant: "Long leases with creditworthy tenants support a lower cap rate.",
+        });
+      }
+    }
+  }
+  if (!r.dcf.available && w.model !== "early_stage")
+    out.push({ key: "dcf_na", title: "DCF not computed", fact: r.dcf.reason ?? "DCF not available.", mitigant: "Provide the missing inputs." });
+  if (!r.multiples.available && r.reconciliation.methods.some((m) => m.method === "multiples"))
     out.push({ key: "mult_na", title: "Multiples not computed", fact: r.multiples.reason ?? "Multiples not available.", mitigant: "Add sourced comparables." });
+  for (const m of r.reconciliation.methods)
+    if (!m.available && ["nav", "income_cap", "vc", "scorecard", "round"].includes(m.method))
+      out.push({ key: `${m.method}_na`, title: `${m.label} not computed`, fact: "The inputs for this method are missing; it carries no weight.", mitigant: "Provide the missing inputs." });
   if (r.reconciliation.floorApplied)
     out.push({ key: "floor", title: "Asset floor applied", fact: "The weighted value fell below the asset-based floor in at least one case; the floor was applied.", mitigant: null });
-  for (const w of r.discountRate?.warnings ?? []) out.push({ key: "dr_warning", title: "Discount rate method", fact: w, mitigant: null });
+  if (dcfRelied(r)) for (const x of r.discountRate?.warnings ?? []) out.push({ key: "dr_warning", title: "Discount rate method", fact: x, mitigant: null });
   const open = openItemsActive(r);
   if (open.length) {
     const b = open.filter((i) => i.severity === "blocking").length;
@@ -319,6 +443,22 @@ export function deriveRisks(ctx: ExportContext): RiskItem[] {
     });
   }
   return out;
+}
+
+/** Operating indicators from intake. Order-based KPIs are F&B-only; the rest apply to every profile. */
+export function operatingIndicators(ctx: ExportContext, w: Wording = wording(ctx)): { label: string; value: string }[] {
+  const ops = ctx.input.operations;
+  const oi: { label: string; value: string }[] = [];
+  if (w.isFnb) {
+    if (ops.dailyOrders !== null) oi.push({ label: "Daily orders", value: fmtAmount(ops.dailyOrders) });
+    if (ops.averageTicket !== null) oi.push({ label: "Average ticket", value: `EGP ${fmtAmount(ops.averageTicket)}` });
+    if (ops.repeatRatePct !== null) oi.push({ label: "Repeat rate", value: fmtPct(ops.repeatRatePct) });
+  }
+  if (ops.topCustomerShare != null && w.model !== "units") oi.push({ label: "Largest customer, share of revenue", value: fmtPct(ops.topCustomerShare) });
+  if (ops.ownerDependencyScore !== null) oi.push({ label: "Owner dependency", value: `${ops.ownerDependencyScore} / 5` });
+  if (ops.importedCogsShare !== null) oi.push({ label: "Imported share of COGS", value: fmtPct(ops.importedCogsShare) });
+  if (ops.inventoryValue !== null) oi.push({ label: "Inventory (book)", value: `EGP ${fmtAmount(ops.inventoryValue)}` });
+  return oi;
 }
 
 /** Charts built from the result, shared by report and deck. */
@@ -335,6 +475,20 @@ export function buildCharts(ctx: ExportContext) {
 /* Builder                                                             */
 /* ------------------------------------------------------------------ */
 
+const EXTRA_SECTION_LABELS: Record<string, string> = { nav: "Net asset value", early_stage: "Early-stage methods" };
+
+function reconNote(methods: string[]): string {
+  const parts: string[] = [];
+  if (methods.includes("dcf")) parts.push("DCF low and high are the downside and upside scenarios");
+  if (methods.includes("multiples")) parts.push("multiples low and high use the comparables' lower and upper quartiles");
+  if (methods.includes("income_cap")) parts.push("income capitalisation low and high use the cap rate plus and minus the spread");
+  if (methods.includes("vc")) parts.push("venture capital method low and high use the lower and upper quartile exit multiples");
+  const point = ["asset", "nav", "scorecard", "round"].filter((m) => methods.includes(m));
+  if (point.length) parts.push("the other methods give a single value");
+  const t = parts.join("; ");
+  return t ? `EGP. ${t.charAt(0).toUpperCase()}${t.slice(1)}.` : "EGP.";
+}
+
 const L = (header: string, width = 3): TableColumn => ({ header, align: "left", width });
 const R = (header: string, width = 1.4): TableColumn => ({ header, align: "right", width });
 
@@ -347,6 +501,7 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
   const fx = spotFx(ctx);
   const charts = buildCharts(ctx);
   const provisional = !!r.provisional;
+  const w = wording(ctx);
 
   const rangeLine = `${fmtMoney(rec.roundedLow)} – ${fmtMoney(rec.roundedHigh)} (mid-point ${fmtMoney(rec.roundedMid)})`;
 
@@ -405,20 +560,29 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
     });
     b.push({ type: "heading", level: 3, text: "Key drivers" });
     const drivers: string[] = [];
-    drivers.push(
-      `Trailing-twelve-month revenue of ${fmtMoney(n.revenue)} and normalized EBITDA of ${fmtMoney(n.normalizedEbitda)} (${fmtPct(n.normalizedMargin)} margin), after addbacks of ${fmtMoney(n.totalAddbacks)} and a market-rate manager cost of ${fmtMoney(n.marketManagerSalary)}.`,
-    );
-    if (r.discountRate) {
-      const w = r.discountRate.waccEgp;
+    if (w.model === "early_stage")
       drivers.push(
-        `Discount rate: ${fmtPct(r.discountRate.costOfEquityUsd)} ${ccy} cost of equity, translated to EGP rates of ${fmtPct(w[0])} in year 1 to ${fmtPct(w[w.length - 1])} in year 5 and ${fmtPct(r.discountRate.waccEgpTerminal)} in the terminal period.`,
+        `Trailing-twelve-month revenue of ${fmtMoney(n.revenue)} and normalized EBITDA of ${fmtMoney(n.normalizedEbitda)}. As an early-stage company, the value rests on the business plan and funding evidence rather than current earnings.`,
+      );
+    else
+      drivers.push(
+        `Trailing-twelve-month revenue of ${fmtMoney(n.revenue)} and normalized EBITDA of ${fmtMoney(n.normalizedEbitda)} (${fmtPct(n.normalizedMargin)} margin), after addbacks of ${fmtMoney(n.totalAddbacks)} and a market-rate manager cost of ${fmtMoney(n.marketManagerSalary)}.`,
+      );
+    if (r.discountRate && dcfRelied(r)) {
+      const wc = r.discountRate.waccEgp;
+      drivers.push(
+        `Discount rate: ${fmtPct(r.discountRate.costOfEquityUsd)} ${ccy} cost of equity, translated to EGP rates of ${fmtPct(wc[0])} in year 1 to ${fmtPct(wc[wc.length - 1])} in year 5 and ${fmtPct(r.discountRate.waccEgpTerminal)} in the terminal period.`,
       );
     }
     const mw = rec.methods.map((m) => `${m.label} ${fmtPct(m.weight)}`).join(", ");
     drivers.push(`Method weights: ${mw}. ${rec.weightsRationale}`);
-    if (r.dcf.available) drivers.push(`Probability-weighted DCF enterprise value of ${fmtMoney(r.dcf.weightedEv)}; market multiples mid-point of ${fmtMoney(r.multiples.mid)}.`);
+    const relied = rec.methods.filter((m) => m.weight > 0 && m.available);
+    if (relied.length)
+      drivers.push(
+        `Method results (mid-point): ${relied.map((m) => `${lowerLabel(m.label)} ${fmtMoney(m.nativeMid)}${m.basis === "equity" ? " (equity value)" : ""}`).join("; ")}.`,
+      );
     drivers.push(
-      `Net equity bridge of ${fmtMoney(r.bridge.netAdjustment)} and combined value adjustments of ${fmtPct(r.adjustments.combinedDiscount)} (marketability, key-person, lease, delivery and FX factors).`,
+      `Net equity bridge of ${fmtMoney(r.bridge.netAdjustment)} and combined value adjustments of ${fmtPct(r.adjustments.combinedDiscount)} (${listJoin(r.adjustments.rows.map((a) => lowerLabel(a.label)))}).`,
     );
     drivers.push(`Asset-based floor of ${fmtMoney(r.assetFloor.floor)}${rec.floorApplied ? ", which was applied" : ", below the weighted value and therefore not applied"}.`);
     b.push({ type: "bullets", items: drivers });
@@ -435,31 +599,35 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
     if (p.founded) kv.push({ label: "Founded", value: p.founded });
     if (p.concept) kv.push({ label: "Concept", value: p.concept });
     if (p.brandAssets) kv.push({ label: "Brand assets", value: p.brandAssets });
-    kv.push({ label: "Trading units", value: `${ctx.input.units.length} (${ctx.input.units.map((u) => u.name).join(", ")})` });
+    kv.push({ label: "Industry profile", value: w.profile.label });
+    if (ctx.input.units.length)
+      kv.push({
+        label: w.model === "units" ? `Trading ${w.units}` : "Reporting units",
+        value: `${ctx.input.units.length} (${ctx.input.units.map((u) => u.name).join(", ")})`,
+      });
     kv.push({ label: "Operating history", value: `${ctx.input.meta.monthsOfHistory} months` });
     if (p.growthPlan) kv.push({ label: "Growth plan", value: p.growthPlan });
     b.push({ type: "kv", items: kv });
 
-    b.push({ type: "heading", level: 3, text: "Channel mix (trailing twelve months)" });
+    b.push({ type: "heading", level: 3, text: "Revenue mix (trailing twelve months)" });
     b.push({
       type: "table",
       columns: [L("Channel", 3), R("Revenue (EGP)", 1.6), R("Share", 1)],
       rows: [
         ...CHANNELS.map((c) => ({
-          cells: [CHANNEL_LABELS[c] ?? humanize(c), fmtAmount(n.revenueByChannel[c]), fmtPct(n.revenue > 0 ? n.revenueByChannel[c] / n.revenue : null)],
+          cells: [w.channelLabel(c), fmtAmount(n.revenueByChannel[c]), fmtPct(n.revenue > 0 ? n.revenueByChannel[c] / n.revenue : null)],
         })),
         { cells: ["Total", fmtAmount(n.revenue), fmtPct(n.revenue > 0 ? 1 : null)], style: "total" },
       ],
     });
 
-    const ops = ctx.input.operations;
-    const oi: { label: string; value: string }[] = [];
-    if (ops.dailyOrders !== null) oi.push({ label: "Daily orders", value: fmtAmount(ops.dailyOrders) });
-    if (ops.averageTicket !== null) oi.push({ label: "Average ticket", value: `EGP ${fmtAmount(ops.averageTicket)}` });
-    if (ops.repeatRatePct !== null) oi.push({ label: "Repeat rate", value: fmtPct(ops.repeatRatePct) });
-    if (ops.ownerDependencyScore !== null) oi.push({ label: "Owner dependency", value: `${ops.ownerDependencyScore} / 5` });
-    if (ops.importedCogsShare !== null) oi.push({ label: "Imported share of COGS", value: fmtPct(ops.importedCogsShare) });
-    if (ops.inventoryValue !== null) oi.push({ label: "Inventory (book)", value: `EGP ${fmtAmount(ops.inventoryValue)}` });
+    const kpis = (p.kpis ?? []).filter((k) => k && k.label && k.value);
+    if (kpis.length) {
+      b.push({ type: "heading", level: 3, text: "Industry indicators" });
+      b.push({ type: "kv", items: kpis.map((k) => ({ label: k.label, value: k.value })) });
+    }
+
+    const oi = operatingIndicators(ctx, w);
     if (oi.length) {
       b.push({ type: "heading", level: 3, text: "Operating indicators" });
       b.push({ type: "kv", items: oi });
@@ -481,29 +649,20 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
         { label: "Cross-check currency", value: e.crossCheckCurrency },
         ...(e.purpose ? [{ label: "Purpose", value: e.purpose }] : []),
         ...(e.scope ? [{ label: "Scope", value: e.scope }] : []),
-        {
-          label: "Discount rate method",
-          value: ctx.input.meta.discountRateMethod === "usd_buildup" ? "USD build-up translated to EGP via inflation differential" : "EGP T-bill build-up",
-        },
+        ...(dcfRelied(r) || (r.dcf.available && w.model !== "early_stage")
+          ? [
+              {
+                label: "Discount rate method",
+                value: ctx.input.meta.discountRateMethod === "usd_buildup" ? "USD build-up translated to EGP via inflation differential" : "EGP T-bill build-up",
+              },
+            ]
+          : []),
       ],
     });
     b.push(...basisOfValueBlocks(ctx));
-    b.push({ type: "heading", level: 3, text: "The nine steps" });
-    b.push({
-      type: "bullets",
-      numbered: true,
-      items: [
-        "Normalization: reported EBITDA is adjusted for owner pay, one-off, related-party and non-operating items to give seller's discretionary earnings (SDE); a market-rate manager cost is then deducted to reach normalized EBITDA.",
-        "Unit economics: each trading unit's four-wall profitability, prime cost, rent ratio and payback are measured; mature units set the template for new openings.",
-        "Discount rate: a cost of equity is built up from a risk-free rate, equity, country, size and company-specific premia, and translated into nominal EGP rates per forecast year.",
-        "Discounted cash flow: five-year free cash flow forecasts are prepared for base, upside and downside scenarios, with a blended Gordon-growth and exit-multiple terminal value, and probability-weighted.",
-        "Market multiples: EV/EBITDA, EV/Revenue and Price/SDE from sourced comparables are applied to the normalized earnings base.",
-        "Asset-based floor: the recoverable value of fit-out, equipment, furniture and inventory, net of liquidation costs, sets a floor to the value.",
-        "Value adjustments: discounts for marketability, key-person dependency, lease risk, delivery-app reliance and FX exposure are applied multiplicatively.",
-        "Equity bridge and reconciliation: method results are weighted, the asset floor is tested, net debt and deposits are bridged to equity, adjustments applied and the range rounded.",
-        "Sensitivity analysis: base-scenario value is re-computed across discount rate, growth, margin, same-store sales, new units and capex.",
-      ],
-    });
+    const steps = methodologySteps(ctx);
+    b.push({ type: "heading", level: 3, text: `Valuation steps (${w.profile.label} profile)` });
+    b.push({ type: "bullets", numbered: true, items: steps.map((x) => x.long) });
     sec("methodology", "Methodology", b, true);
   }
 
@@ -512,10 +671,10 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
     const pctRev = (v: number) => fmtPct(n.revenue > 0 ? v / n.revenue : null);
     const rows: TableRow[] = [];
     rows.push({ cells: ["Revenue", "", ""], style: "group" });
-    for (const c of CHANNELS) rows.push({ cells: [`  ${CHANNEL_LABELS[c]}`, fmtAmount(n.revenueByChannel[c]), pctRev(n.revenueByChannel[c])] });
+    for (const c of CHANNELS) rows.push({ cells: [`  ${w.channelLabel(c)}`, fmtAmount(n.revenueByChannel[c]), pctRev(n.revenueByChannel[c])] });
     rows.push({ cells: ["Total revenue", fmtAmount(n.revenue), pctRev(n.revenue)], style: "subtotal" });
     rows.push({ cells: ["Operating costs", "", ""], style: "group" });
-    for (const [k, v] of Object.entries(n.costs)) rows.push({ cells: [`  ${COST_LABELS[k] ?? humanize(k)}`, fmtAmount(-v), pctRev(v)] });
+    for (const [k, v] of Object.entries(n.costs)) rows.push({ cells: [`  ${w.costLabel(k)}`, fmtAmount(-v), pctRev(v)] });
     rows.push({ cells: ["Total costs", fmtAmount(-n.totalCosts), pctRev(n.totalCosts)], style: "subtotal" });
     rows.push({ cells: ["Reported EBITDA", fmtAmount(n.reportedEbitda), fmtPct(n.reportedMargin)], style: "total" });
     rows.push({ cells: ["Addbacks", "", ""], style: "group" });
@@ -542,167 +701,319 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
   {
     const b: Block[] = [];
     const ue = r.unitEconomics;
-    b.push({ type: "heading", level: 2, text: "Unit economics" });
-    b.push({
-      type: "table",
-      small: true,
-      columns: [L("Unit", 1.7), R("Months open", 0.9), R("TTM sales", 1.35), R("Prime cost", 0.95), R("Rent", 0.8), R("Four-wall EBITDA", 1.35), R("Margin", 0.85), R("Investment", 1.35), R("Payback (yrs)", 0.95)],
-      rows: [
-        ...ue.rows.map((u) => ({
-          cells: [
-            u.name + (u.mature ? "" : " *"),
-            u.monthsOpen === null ? "n/a" : String(u.monthsOpen),
-            fmtAmount(u.sales),
-            fmtPct(u.primeCostPct),
-            fmtPct(u.rentPct),
-            fmtAmount(u.fourWallEbitda),
-            fmtPct(u.fourWallMargin),
-            fmtAmount(u.investment),
-            fmtYears(u.paybackYears),
-          ],
-        })),
-        {
-          cells: ["Total", "", fmtAmount(ue.totals.sales), "", "", fmtAmount(ue.totals.fourWallEbitda), fmtPct(ue.totals.fourWallMargin), fmtAmount(ue.totals.investment), ""],
-          style: "total",
-        },
-      ],
-      note: "EGP. Prime cost (COGS plus labour) and rent as % of unit sales. * Not yet mature (under 24 months open or partial TTM).",
-    });
-    b.push({ type: "heading", level: 3, text: "New-unit template" });
-    b.push({
-      type: "kv",
-      items: [
-        { label: "Mature annual sales per new unit", value: `EGP ${fmtAmount(ue.newUnitMatureSales)}` },
-        { label: "Capex per new unit", value: `EGP ${fmtAmount(ue.newUnitCapex)}` },
-        { label: "Four-wall margin (mature)", value: fmtPct(ue.newUnitFourWallMargin) },
-        { label: "Payback", value: ue.newUnitPaybackYears === null ? "n/a" : `${fmtYears(ue.newUnitPaybackYears)} years` },
-        { label: "Ramp-up: year 1 / year 2 sales as % of mature", value: `${fmtPct(ue.rampY1)} / ${fmtPct(ue.rampY2)}` },
-      ],
-    });
-
-    // Discount rate
-    b.push({ type: "heading", level: 2, text: "Discount rate" });
-    const dr = r.discountRate;
-    if (dr) {
-      b.push({
-        type: "table",
-        columns: [L("Component", 4), R("Rate", 1.2)],
-        rows: [
-          ...dr.components.map((c) => ({ cells: [c.label, fmtPct(c.value)] })),
-          { cells: [dr.method === "usd_buildup" ? `Cost of equity (${ccy})` : "Cost of equity (EGP)", fmtPct(dr.method === "usd_buildup" ? dr.costOfEquityUsd : dr.waccEgpTerminal)], style: "total" },
-        ],
-      });
-      b.push({
-        type: "table",
-        columns: [L("Nominal EGP discount rate", 2.4), ...dr.waccEgp.map((_, i) => R(`Year ${i + 1}`, 1)), R("Terminal", 1)],
-        rows: [{ cells: ["Discount rate (WACC)", ...dr.waccEgp.map(fmtPct), fmtPct(dr.waccEgpTerminal)] }],
-        note: `${ccy} discount rate used for the cross-check: ${fmtPct(dr.waccUsd)}.`,
-      });
-      for (const w of dr.warnings) b.push({ type: "paragraph", tone: "muted", text: `Note: ${w}` });
-    } else {
-      b.push({ type: "paragraph", text: "Discount rate not computed." });
-    }
-
-    // DCF
-    b.push({ type: "heading", level: 2, text: "Discounted cash flow" });
+    const methodSet = new Set(rec.methods.map((m) => m.method));
+    const relied = dcfRelied(r);
     const sc = r.dcf.scenarios;
-    if (r.dcf.available && sc) {
-      const yrs = sc.base.years;
-      const row = (label: string, f: (y: (typeof yrs)[number]) => string, style?: RowStyle): TableRow => ({ cells: [label, ...yrs.map(f)], style });
-      b.push({
-        type: "table",
-        caption: "Base-scenario forecast (EGP, nominal)",
-        small: true,
-        columns: [L("", 2.6), ...yrs.map((y) => R(`Year ${y.year}`, 1.2))],
-        rows: [
-          row("New units opened", (y) => String(y.newUnitsOpened)),
-          row("Revenue: existing units", (y) => fmtAmount(y.existingRevenue)),
-          row("Revenue: new units", (y) => fmtAmount(y.newUnitRevenue)),
-          row("Total revenue", (y) => fmtAmount(y.revenue), "subtotal"),
-          row("EBITDA margin", (y) => fmtPct(y.ebitdaMargin)),
-          row("EBITDA", (y) => fmtAmount(y.ebitda), "subtotal"),
-          row("Memo: depreciation & amortisation", (y) => fmtAmount(y.da), "muted"),
-          row("Memo: EBIT", (y) => fmtAmount(y.ebit), "muted"),
-          row("Tax on EBIT", (y) => fmtAmount(-y.tax)),
-          row("Expansion capex", (y) => fmtAmount(-y.expansionCapex)),
-          row("Maintenance capex", (y) => fmtAmount(-y.maintenanceCapex)),
-          row("Change in working capital", (y) => fmtAmount(-y.deltaNwc)),
-          row("Free cash flow to firm", (y) => fmtAmount(y.fcff), "total"),
-          row("Discount rate", (y) => fmtPct(y.discountRate)),
-          row("Discount factor (mid-year)", (y) => fmtFactor(y.discountFactor)),
-          row("Present value", (y) => fmtAmount(y.pv), "subtotal"),
-        ],
-        note: "Free cash flow to firm = EBITDA less tax on EBIT (memo lines), expansion and maintenance capex and the change in working capital. Mid-year discounting.",
-      });
-      b.push({ type: "heading", level: 3, text: "Scenario results" });
+
+    if (w.model === "units") {
+      b.push({ type: "heading", level: 2, text: `${w.Unit} economics` });
       b.push({
         type: "table",
         small: true,
-        columns: [L("Scenario", 1.4), R("Probability", 1), R("Sum of PV", 1.3), R("PV of TV (Gordon)", 1.4), R("PV of TV (exit)", 1.4), R("Enterprise value", 1.4), R("TV share", 0.9)],
+        columns: [L(w.Unit, 1.7), R("Months open", 0.9), R("TTM sales", 1.35), R(w.directCost, 0.95), R("Rent", 0.8), R(w.unitEbitda, 1.35), R("Margin", 0.85), R("Investment", 1.35), R("Payback (yrs)", 0.95)],
         rows: [
-          ...(["base", "upside", "downside"] as const).map((s) => ({
-            cells: [humanize(s), fmtPct(r.dcf.weights[s]), fmtAmount(sc[s].sumPv), fmtAmount(sc[s].pvTvGordon), fmtAmount(sc[s].pvTvExit), fmtAmount(sc[s].ev), fmtPct(sc[s].tvShareOfEv)],
+          ...ue.rows.map((u) => ({
+            cells: [
+              u.name + (u.mature ? "" : " *"),
+              u.monthsOpen === null ? "n/a" : String(u.monthsOpen),
+              fmtAmount(u.sales),
+              fmtPct(u.primeCostPct),
+              fmtPct(u.rentPct),
+              fmtAmount(u.fourWallEbitda),
+              fmtPct(u.fourWallMargin),
+              fmtAmount(u.investment),
+              fmtYears(u.paybackYears),
+            ],
           })),
-          { cells: ["Probability-weighted", "", "", "", "", fmtAmount(r.dcf.weightedEv), ""], style: "total" },
+          {
+            cells: ["Total", "", fmtAmount(ue.totals.sales), "", "", fmtAmount(ue.totals.fourWallEbitda), fmtPct(ue.totals.fourWallMargin), fmtAmount(ue.totals.investment), ""],
+            style: "total",
+          },
         ],
+        note: `EGP. ${w.directCost} (COGS plus labour) and rent as % of ${w.unit} sales. * Not yet mature (under 24 months open or partial TTM).`,
       });
-      const exitA = r.assumptions.find((a) => a.key === "dcf.exit_multiple");
-      const gw = r.assumptions.find((a) => a.key === "dcf.tv_weight_gordon");
-      b.push({ type: "heading", level: 3, text: "Terminal value (base scenario)" });
+      b.push({ type: "heading", level: 3, text: `New-${w.unit} template` });
       b.push({
         type: "kv",
         items: [
-          { label: "Terminal free cash flow", value: `EGP ${fmtAmount(sc.base.terminalFcff)}` },
-          { label: "Terminal nominal growth", value: fmtPct(sc.base.terminalGrowth) },
-          { label: "Gordon-growth terminal value", value: `EGP ${fmtAmount(sc.base.tvGordon)}` },
-          { label: "Exit-multiple terminal value", value: `EGP ${fmtAmount(sc.base.tvExit)}${exitA?.value != null ? ` (${fmtMultiple(exitA.value)} EBITDA)` : ""}` },
-          { label: "Weight on Gordon growth", value: fmtPct(gw?.value ?? null) },
-          { label: "Discount factor, end of year 5", value: fmtFactor(sc.base.discountFactorEnd) },
+          { label: `Mature annual sales per new ${w.unit}`, value: `EGP ${fmtAmount(ue.newUnitMatureSales)}` },
+          { label: `Capex per new ${w.unit}`, value: `EGP ${fmtAmount(ue.newUnitCapex)}` },
+          { label: `${w.unitEbitda} margin (mature)`, value: fmtPct(ue.newUnitFourWallMargin) },
+          { label: "Payback", value: ue.newUnitPaybackYears === null ? "n/a" : `${fmtYears(ue.newUnitPaybackYears)} years` },
+          { label: "Ramp-up: year 1 / year 2 sales as % of mature", value: `${fmtPct(ue.rampY1)} / ${fmtPct(ue.rampY2)}` },
         ],
       });
-      const x = r.dcf.usdCrossCheck;
-      if (x) {
-        b.push({ type: "heading", level: 3, text: `${ccy} cross-check (base scenario)` });
+    }
+
+    if (w.model === "asset_heavy") {
+      const nv = r.nav;
+      b.push({ type: "heading", level: 2, text: "Net asset value and income capitalisation" });
+      if (nv.rows.length) {
+        b.push({
+          type: "table",
+          caption: "Assets at market value",
+          columns: [L("Asset", 2.2), L("Type", 1.4), R("Market value (EGP)", 1.5), R("Book value (EGP)", 1.4), L("Source of market value", 2)],
+          rows: [
+            ...nv.rows.map((x) => ({
+              cells: [x.name, humanize(x.kind), x.marketValue === null ? "Not recorded" : fmtAmount(x.marketValue), fmtAmount(x.bookValue), x.sourceNote ?? "No source recorded"],
+              style: x.marketValue === null ? ("muted" as const) : undefined,
+            })),
+            { cells: ["Net asset value (market value of assets)", "", fmtAmount(nv.totalMarketValue), fmtAmount(nv.rows.reduce((s2, x) => s2 + (x.bookValue ?? 0), 0)), ""], style: "total" },
+          ],
+          note: nv.missing.length ? `No market value recorded for ${listJoin(nv.missing)}; excluded from the total and listed as open items.` : "All assets carry a market value with a recorded source.",
+        });
+      } else {
+        b.push({ type: "paragraph", text: "No assets with a market value were provided; the net asset value is not computed." });
+      }
+      const ic = nv.incomeCap;
+      b.push({ type: "heading", level: 3, text: "Income capitalisation" });
+      if (ic.available && ic.capRate !== null) {
+        b.push({
+          type: "table",
+          columns: [L("", 3), R("Low"), R("Mid"), R("High")],
+          rows: [
+            { cells: ["Net operating income (normalized EBITDA, EGP)", fmtAmount(ic.noi), fmtAmount(ic.noi), fmtAmount(ic.noi)] },
+            { cells: ["Capitalisation rate", fmtPct(ic.capRate + ic.spread), fmtPct(ic.capRate), fmtPct(ic.capRate - ic.spread)] },
+            { cells: ["Income-capitalisation value (EGP)", fmtAmount(ic.low), fmtAmount(ic.mid), fmtAmount(ic.high)], style: "total" },
+          ],
+          note: `Value = net operating income / cap rate. Low and high use the cap rate plus and minus ${fmtPct(ic.spread)}.`,
+        });
+      } else {
+        b.push({ type: "paragraph", text: "Income capitalisation not computed: a sourced cap rate and positive net operating income are required." });
+      }
+    }
+
+    if (w.model === "early_stage") {
+      const es = r.earlyStage;
+      b.push({ type: "heading", level: 2, text: "Early-stage methods" });
+      b.push({ type: "heading", level: 3, text: "Venture capital method" });
+      const vc = es.vc;
+      if (vc.available) {
+        b.push({
+          type: "table",
+          columns: [L("", 3), R("Low"), R("Mid"), R("High")],
+          rows: [
+            { cells: ["Revenue in the exit year (EGP)", fmtAmount(vc.exitRevenue), fmtAmount(vc.exitRevenue), fmtAmount(vc.exitRevenue)] },
+            { cells: ["Exit EV/Revenue multiple", fmtMultiple(vc.exitMultipleLow), fmtMultiple(vc.exitMultiple), fmtMultiple(vc.exitMultipleHigh)] },
+            {
+              cells: [
+                "Exit value (EGP)",
+                fmtAmount(vc.exitRevenue * (vc.exitMultipleLow ?? 0)),
+                fmtAmount(vc.exitValue),
+                fmtAmount(vc.exitRevenue * (vc.exitMultipleHigh ?? 0)),
+              ],
+              style: "subtotal",
+            },
+            { cells: ["Retention after future dilution", fmtPct(vc.retention), fmtPct(vc.retention), fmtPct(vc.retention)] },
+            { cells: [`Discount factor (${fmtPct(vc.targetReturn)} target return, ${fmtAmount(vc.exitYears)} years)`, fmtFactor(vc.discountFactor), fmtFactor(vc.discountFactor), fmtFactor(vc.discountFactor)] },
+            { cells: ["Venture capital method value (equity, EGP)", fmtAmount(vc.low), fmtAmount(vc.mid), fmtAmount(vc.high)], style: "total" },
+          ],
+          note: "Value = exit revenue x exit multiple x retention / (1 + target return)^years. Low and high use the comparables' lower and upper quartile EV/Revenue.",
+        });
+      } else b.push({ type: "paragraph", text: "Venture capital method not computed: exit-year revenue, years to exit and an exit multiple are required." });
+
+      b.push({ type: "heading", level: 3, text: "Scorecard method" });
+      const s2 = es.scorecard;
+      b.push({
+        type: "table",
+        columns: [L("Factor", 3), R("Weight", 1), R("Score", 1), R("Weight x score", 1.2)],
+        rows: [
+          ...s2.factors.map((f) => ({ cells: [f.label, fmtPct(f.weight), fmtPct(f.score), fmtFactor(f.product)] })),
+          { cells: ["Scorecard multiplier", fmtPct(s2.factors.reduce((a2, f) => a2 + f.weight, 0)), "", fmtFactor(s2.multiplier)], style: "subtotal" },
+          { cells: ["Median pre-money of comparable funded startups (EGP)", "", "", fmtAmount(s2.base)] },
+          { cells: ["Scorecard value (equity, EGP)", "", "", s2.available ? fmtAmount(s2.value) : "n/a"], style: "total" },
+        ],
+        note: "Scores are relative to a typical funded peer (100% = typical). Value = median pre-money x multiplier.",
+      });
+
+      b.push({ type: "heading", level: 3, text: "Recent funding round" });
+      const rd = es.round;
+      b.push({
+        type: "kv",
+        items: [
+          { label: "Post-money value of the latest priced round", value: rd.postMoney === null ? "Not provided" : `EGP ${fmtAmount(rd.postMoney)}` },
+          { label: "Date of the round", value: rd.date ? fmtDate(rd.date) : "Not provided" },
+          { label: "Change in value since the round", value: fmtPct(rd.adjustment) },
+          { label: "Funding round value (equity)", value: rd.available ? `EGP ${fmtAmount(rd.value)}` : "n/a" },
+        ],
+      });
+      b.push({
+        type: "paragraph",
+        tone: "muted",
+        text: "These three methods give an equity value. For the reconciliation they are converted to an enterprise-value equivalent by removing the net equity bridge, and the bridge is added back afterwards.",
+      });
+    }
+
+    if ((w.model === "operating" || w.model === "asset_heavy") && sc && (relied || w.model === "operating")) {
+      const yrs = sc.base.years;
+      const growth = realGrowthPath(r, "base");
+      b.push({ type: "heading", level: 2, text: "Revenue forecast" });
+      b.push({
+        type: "paragraph",
+        text: `The forecast is built at company level from trailing-twelve-month revenue of ${fmtMoney(n.revenue)}. Real growth (above EGP inflation) is ${growth.every((g) => g !== null) ? growth.map((g) => fmtPct(g)).join(", ") : "partly missing"} in years 1 to 5 of the base scenario${ctx.input.growthPlan.revenueGrowthNominal?.some((g) => g != null) ? ", derived from the client's nominal growth plan" : ""}.`,
+      });
+      b.push({
+        type: "table",
+        caption: "Base-scenario revenue path (EGP, nominal)",
+        columns: [L("", 2.6), R("TTM", 1.2), ...yrs.map((y) => R(`Year ${y.year}`, 1.2))],
+        rows: [
+          { cells: ["Real revenue growth", "", ...yrs.map((_, i) => fmtPct(growth[i]))] },
+          { cells: ["EGP inflation", "", ...yrs.map((y) => fmtPct(y.egpInflation))] },
+          { cells: ["Nominal revenue growth", "", ...yrs.map((y, i) => fmtPct((i === 0 ? n.revenue : yrs[i - 1]!.revenue) > 0 ? y.revenue / (i === 0 ? n.revenue : yrs[i - 1]!.revenue) - 1 : null))] },
+          { cells: ["Revenue", fmtAmount(n.revenue), ...yrs.map((y) => fmtAmount(y.revenue))], style: "subtotal" },
+          { cells: ["EBITDA margin", fmtPct(n.normalizedMargin), ...yrs.map((y) => fmtPct(y.ebitdaMargin))] },
+          { cells: ["EBITDA", fmtAmount(n.normalizedEbitda), ...yrs.map((y) => fmtAmount(y.ebitda))], style: "subtotal" },
+        ],
+        note: "TTM column: normalized trailing-twelve-month figures. Nominal growth combines real growth and EGP inflation.",
+      });
+    }
+
+    if (methodSet.has("dcf") && (relied || (r.dcf.available && w.model !== "early_stage"))) {
+      // Discount rate
+      b.push({ type: "heading", level: 2, text: "Discount rate" });
+      const dr = r.discountRate;
+      if (dr) {
+        b.push({
+          type: "table",
+          columns: [L("Component", 4), R("Rate", 1.2)],
+          rows: [
+            ...dr.components.map((c) => ({ cells: [c.label, fmtPct(c.value)] })),
+            { cells: [dr.method === "usd_buildup" ? `Cost of equity (${ccy})` : "Cost of equity (EGP)", fmtPct(dr.method === "usd_buildup" ? dr.costOfEquityUsd : dr.waccEgpTerminal)], style: "total" },
+          ],
+        });
+        b.push({
+          type: "table",
+          columns: [L("Nominal EGP discount rate", 2.4), ...dr.waccEgp.map((_, i) => R(`Year ${i + 1}`, 1)), R("Terminal", 1)],
+          rows: [{ cells: ["Discount rate (WACC)", ...dr.waccEgp.map(fmtPct), fmtPct(dr.waccEgpTerminal)] }],
+          note: `${ccy} discount rate used for the cross-check: ${fmtPct(dr.waccUsd)}.`,
+        });
+        for (const x of dr.warnings) b.push({ type: "paragraph", tone: "muted", text: `Note: ${x}` });
+      } else {
+        b.push({ type: "paragraph", text: "Discount rate not computed." });
+      }
+
+      // DCF
+      b.push({ type: "heading", level: 2, text: "Discounted cash flow" });
+      if (r.dcf.available && sc) {
+        const yrs = sc.base.years;
+        const growth = realGrowthPath(r, "base");
+        const row = (label: string, f: (y: (typeof yrs)[number], i: number) => string, style?: RowStyle): TableRow => ({ cells: [label, ...yrs.map(f)], style });
+        const revenueRows: TableRow[] =
+          w.model === "units"
+            ? [
+                row(`New ${w.units} opened`, (y) => String(y.newUnitsOpened)),
+                row(`Revenue: existing ${w.units}`, (y) => fmtAmount(y.existingRevenue)),
+                row(`Revenue: new ${w.units}`, (y) => fmtAmount(y.newUnitRevenue)),
+              ]
+            : [row("Real revenue growth", (_, i) => fmtPct(growth[i]))];
+        b.push({
+          type: "table",
+          caption: "Base-scenario forecast (EGP, nominal)",
+          small: true,
+          columns: [L("", 2.6), ...yrs.map((y) => R(`Year ${y.year}`, 1.2))],
+          rows: [
+            ...revenueRows,
+            row("Total revenue", (y) => fmtAmount(y.revenue), "subtotal"),
+            row("EBITDA margin", (y) => fmtPct(y.ebitdaMargin)),
+            row("EBITDA", (y) => fmtAmount(y.ebitda), "subtotal"),
+            row("Memo: depreciation & amortisation", (y) => fmtAmount(y.da), "muted"),
+            row("Memo: EBIT", (y) => fmtAmount(y.ebit), "muted"),
+            row("Tax on EBIT", (y) => fmtAmount(-y.tax)),
+            ...(w.model === "units" ? [row("Expansion capex", (y) => fmtAmount(-y.expansionCapex))] : []),
+            row("Maintenance capex", (y) => fmtAmount(-y.maintenanceCapex)),
+            row("Change in working capital", (y) => fmtAmount(-y.deltaNwc)),
+            row("Free cash flow to firm", (y) => fmtAmount(y.fcff), "total"),
+            row("Discount rate", (y) => fmtPct(y.discountRate)),
+            row("Discount factor (mid-year)", (y) => fmtFactor(y.discountFactor)),
+            row("Present value", (y) => fmtAmount(y.pv), "subtotal"),
+          ],
+          note:
+            w.model === "units"
+              ? "Free cash flow to firm = EBITDA less tax on EBIT (memo lines), expansion and maintenance capex and the change in working capital. Mid-year discounting."
+              : "Free cash flow to firm = EBITDA less tax on EBIT (memo lines), capex and the change in working capital. Mid-year discounting.",
+        });
+        b.push({ type: "heading", level: 3, text: "Scenario results" });
+        b.push({
+          type: "table",
+          small: true,
+          columns: [L("Scenario", 1.4), R("Probability", 1), R("Sum of PV", 1.3), R("PV of TV (Gordon)", 1.4), R("PV of TV (exit)", 1.4), R("Enterprise value", 1.4), R("TV share", 0.9)],
+          rows: [
+            ...(["base", "upside", "downside"] as const).map((s) => ({
+              cells: [humanize(s), fmtPct(r.dcf.weights[s]), fmtAmount(sc[s].sumPv), fmtAmount(sc[s].pvTvGordon), fmtAmount(sc[s].pvTvExit), fmtAmount(sc[s].ev), fmtPct(sc[s].tvShareOfEv)],
+            })),
+            { cells: ["Probability-weighted", "", "", "", "", fmtAmount(r.dcf.weightedEv), ""], style: "total" },
+          ],
+        });
+        const exitA = r.assumptions.find((a) => a.key === "dcf.exit_multiple");
+        const gw = r.assumptions.find((a) => a.key === "dcf.tv_weight_gordon");
+        b.push({ type: "heading", level: 3, text: "Terminal value (base scenario)" });
         b.push({
           type: "kv",
           items: [
-            { label: "FX basis", value: x.fxBasis === "ppp" ? "Purchasing power parity from spot" : "Sourced FX forecast" },
-            { label: `Enterprise value in ${ccy}`, value: `${ccy} ${fmtAmount(x.evUsd)}` },
-            { label: "Translated at spot", value: `EGP ${fmtAmount(x.evUsdInEgp)}` },
-            { label: "Difference to EGP DCF", value: fmtPct(x.differencePct) },
+            { label: "Terminal free cash flow", value: `EGP ${fmtAmount(sc.base.terminalFcff)}` },
+            { label: "Terminal nominal growth", value: fmtPct(sc.base.terminalGrowth) },
+            { label: "Gordon-growth terminal value", value: `EGP ${fmtAmount(sc.base.tvGordon)}` },
+            { label: "Exit-multiple terminal value", value: `EGP ${fmtAmount(sc.base.tvExit)}${exitA?.value != null ? ` (${fmtMultiple(exitA.value)} EBITDA)` : ""}` },
+            { label: "Weight on Gordon growth", value: fmtPct(gw?.value ?? null) },
+            { label: "Discount factor, end of year 5", value: fmtFactor(sc.base.discountFactorEnd) },
           ],
         });
+        const x = r.dcf.usdCrossCheck;
+        if (x) {
+          b.push({ type: "heading", level: 3, text: `${ccy} cross-check (base scenario)` });
+          b.push({
+            type: "kv",
+            items: [
+              { label: "FX basis", value: x.fxBasis === "ppp" ? "Purchasing power parity from spot" : "Sourced FX forecast" },
+              { label: `Enterprise value in ${ccy}`, value: `${ccy} ${fmtAmount(x.evUsd)}` },
+              { label: "Translated at spot", value: `EGP ${fmtAmount(x.evUsdInEgp)}` },
+              { label: "Difference to EGP DCF", value: fmtPct(x.differencePct) },
+            ],
+          });
+        }
+        if (!relied) b.push({ type: "paragraph", tone: "muted", text: "The DCF carries no weight in the reconciliation and is shown for reference only." });
+      } else {
+        b.push({ type: "paragraph", text: `The DCF was not computed. ${r.dcf.reason ?? ""}`.trim() });
       }
-    } else {
-      b.push({ type: "paragraph", text: `The DCF was not computed. ${r.dcf.reason ?? ""}`.trim() });
+    } else if (methodSet.has("dcf")) {
+      b.push({ type: "heading", level: 2, text: "Discounted cash flow" });
+      b.push({
+        type: "paragraph",
+        text: r.dcf.available
+          ? "The DCF is not relied on (weight 0%): for an early-stage company, near-term cash flows do not yet reflect the business plan, so the value rests on the methods above."
+          : `The DCF was not computed and is not relied on (weight 0%). ${r.dcf.reason ?? ""}`.trim(),
+      });
     }
 
     // Multiples
-    b.push({ type: "heading", level: 2, text: "Market multiples" });
-    const mlabel: Record<string, string> = { ev_ebitda: "EV / EBITDA", ev_revenue: "EV / Revenue", price_sde: "Price / SDE" };
-    const blabel: Record<string, string> = { ev_ebitda: "Normalized EBITDA", ev_revenue: "TTM revenue", price_sde: "SDE" };
-    b.push({
-      type: "table",
-      columns: [L("Multiple", 2), R("Comps", 0.8), R("Q1", 0.9), R("Median", 0.9), R("Q3", 0.9), R("Selected", 1), R("Weight", 1)],
-      rows: r.multiples.stats.map((s) => ({
-        cells: [mlabel[s.metric] ?? s.metric, String(s.count), fmtMultiple(s.q1), fmtMultiple(s.median), fmtMultiple(s.q3), fmtMultiple(s.selected), fmtPct(s.weight)],
-      })),
-    });
-    b.push({
-      type: "table",
-      columns: [L("Implied enterprise value", 2.2), R("Earnings base", 1.3), R("Low (Q1)", 1.3), R("Mid (selected)", 1.3), R("High (Q3)", 1.3)],
-      rows: [
-        ...r.multiples.stats.map((s) => ({
-          cells: [`${mlabel[s.metric]} on ${blabel[s.metric]}`, fmtAmount(s.base), fmtAmount(s.low), fmtAmount(s.mid), fmtAmount(s.high)],
+    if (methodSet.has("multiples")) {
+      b.push({ type: "heading", level: 2, text: "Market multiples" });
+      if (methodWeight(r, "multiples") === 0) b.push({ type: "paragraph", tone: "muted", text: "Market multiples are shown as a cross-check; they carry no weight in the reconciliation." });
+      const mlabel: Record<string, string> = { ev_ebitda: "EV / EBITDA", ev_revenue: "EV / Revenue", price_sde: "Price / SDE" };
+      const blabel: Record<string, string> = { ev_ebitda: "Normalized EBITDA", ev_revenue: "TTM revenue", price_sde: "SDE" };
+      b.push({
+        type: "table",
+        columns: [L("Multiple", 2), R("Comps", 0.8), R("Q1", 0.9), R("Median", 0.9), R("Q3", 0.9), R("Selected", 1), R("Weight", 1)],
+        rows: r.multiples.stats.map((s) => ({
+          cells: [mlabel[s.metric] ?? s.metric, String(s.count), fmtMultiple(s.q1), fmtMultiple(s.median), fmtMultiple(s.q3), fmtMultiple(s.selected), fmtPct(s.weight)],
         })),
-        ...(r.multiples.available ? [{ cells: ["Weighted", "", fmtAmount(r.multiples.low), fmtAmount(r.multiples.mid), fmtAmount(r.multiples.high)], style: "total" as const }] : []),
-      ],
-      note: r.multiples.available ? "EGP." : `Multiples not computed. ${r.multiples.reason ?? ""}`,
-    });
+      });
+      b.push({
+        type: "table",
+        columns: [L("Implied enterprise value", 2.2), R("Earnings base", 1.3), R("Low (Q1)", 1.3), R("Mid (selected)", 1.3), R("High (Q3)", 1.3)],
+        rows: [
+          ...r.multiples.stats.map((s) => ({
+            cells: [`${mlabel[s.metric]} on ${blabel[s.metric]}`, fmtAmount(s.base), fmtAmount(s.low), fmtAmount(s.mid), fmtAmount(s.high)],
+          })),
+          ...(r.multiples.available ? [{ cells: ["Weighted", "", fmtAmount(r.multiples.low), fmtAmount(r.multiples.mid), fmtAmount(r.multiples.high)], style: "total" as const }] : []),
+        ],
+        note: r.multiples.available ? "EGP." : `Multiples not computed. ${r.multiples.reason ?? ""}`,
+      });
+    }
     const comps = ctx.input.comparables.filter((c) => c.included);
-    if (comps.length) {
+    if (comps.length && (methodSet.has("multiples") || w.model === "early_stage")) {
       const srcTitle = (id: string) => ctx.sources.find((s) => s.id === id)?.title ?? "No source";
-      b.push({ type: "heading", level: 3, text: "Comparables included" });
+      b.push({ type: "heading", level: methodSet.has("multiples") ? 3 : 2, text: methodSet.has("multiples") ? "Comparables included" : "Comparables (source of the exit multiple)" });
       b.push({
         type: "table",
         small: true,
@@ -780,17 +1091,43 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
   /* ---------------- Reconciliation ---------------- */
   {
     const b: Block[] = [];
+    const hasEquity = rec.methods.some((m) => m.basis === "equity");
     b.push({
       type: "table",
+      caption: hasEquity ? "Each method's own result" : undefined,
+      small: true,
+      columns: [L("Method (EGP)", 2.8), L("Basis", 0.7), R("Low", 1.25), R("Mid", 1.25), R("High", 1.25), R("Weight", 0.8)],
+      rows: [
+        ...rec.methods.map((m) => ({
+          cells: [
+            m.label + (m.available ? "" : " (not computed)"),
+            m.basis === "equity" ? "Equity" : "EV",
+            m.available ? fmtAmount(m.nativeLow) : "n/a",
+            m.available ? fmtAmount(m.nativeMid) : "n/a",
+            m.available ? fmtAmount(m.nativeHigh) : "n/a",
+            fmtPct(m.weight),
+          ],
+          style: m.available ? undefined : ("muted" as const),
+        })),
+        ...(hasEquity ? [] : [{ cells: ["Weighted enterprise value", "EV", fmtAmount(rec.evLow), fmtAmount(rec.evMid), fmtAmount(rec.evHigh), fmtPct(1)], style: "total" as const }]),
+      ],
+      note: `EV = enterprise value; Equity = equity value. ${reconNote(rec.methods.map((m) => m.method)).replace(/^EGP\. /, "")}`,
+    });
+    if (hasEquity) b.push({
+      type: "table",
+      caption: "Weighting on an enterprise-value basis",
+      small: true,
       columns: [L("Method (enterprise value, EGP)", 2.6), R("Low", 1.3), R("Mid", 1.3), R("High", 1.3), R("Weight", 0.9)],
       rows: [
         ...rec.methods.map((m) => ({
-          cells: [m.label + (m.available ? "" : " (not computed)"), fmtAmount(m.low), fmtAmount(m.mid), fmtAmount(m.high), fmtPct(m.weight)],
+          cells: [m.label + (m.available ? (m.basis === "equity" ? " (EV equivalent)" : "") : " (not computed)"), fmtAmount(m.low), fmtAmount(m.mid), fmtAmount(m.high), fmtPct(m.weight)],
           style: m.available ? undefined : ("muted" as const),
         })),
         { cells: ["Weighted enterprise value", fmtAmount(rec.evLow), fmtAmount(rec.evMid), fmtAmount(rec.evHigh), fmtPct(1)], style: "total" },
       ],
-      note: "DCF low and high are the downside and upside scenarios; multiples low and high use the comparables' lower and upper quartiles.",
+      note: hasEquity
+        ? `Methods that give an equity value are converted to an enterprise-value equivalent by deducting the net equity bridge of ${fmtMoney(r.bridge.netAdjustment)} (equity value less bridge); the bridge is added back after weighting.`
+        : undefined,
     });
     b.push({ type: "paragraph", text: rec.weightsRationale });
     b.push({
@@ -803,7 +1140,11 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
       type: "chart",
       title: "Valuation range by method",
       chart: charts.footballField,
-      caption: `Method bars on an enterprise value basis; concluded range on an equity basis after the equity bridge and value adjustments: ${rangeLine}.`,
+      caption:
+        "Method bars on an enterprise value basis" +
+        (hasEquity ? "; equity-value methods are shown as their EV equivalent (equity value less the net equity bridge) so all bars share one scale" : "") +
+        ". Single-point methods are shown as a diamond. Concluded range on an equity basis after the equity bridge and value adjustments: " +
+        `${rangeLine}.`,
     });
     sec("reconciliation", "Reconciliation", b, true);
   }
@@ -811,15 +1152,22 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
   /* ---------------- Sensitivities ---------------- */
   {
     const b: Block[] = [];
+    const grids = charts.heatmaps.filter((h) => h.grid.values.length);
     b.push({
       type: "paragraph",
-      text: "Each table re-computes the base-scenario DCF enterprise value while flexing two inputs at a time; all other assumptions are held constant. Values are before the equity bridge and value adjustments.",
+      text:
+        w.model === "early_stage"
+          ? "Each table re-computes the value from the method named in its title while flexing two inputs at a time; all other assumptions are held constant. Values are before value adjustments."
+          : "Each table re-computes the value from the method named in its title (the base-scenario DCF unless stated) while flexing two inputs at a time; all other assumptions are held constant. Values are enterprise values before the equity bridge and value adjustments.",
     });
-    if (!r.dcf.available) b.push({ type: "paragraph", tone: "muted", text: "Sensitivities are not available because the DCF was not computed." });
+    if (!grids.length) b.push({ type: "paragraph", tone: "muted", text: "Sensitivities are not available because the inputs for the underlying methods are missing." });
     else
-      charts.heatmaps.forEach((h: { grid: SensitivityGrid; chart: SvgChart }) =>
+      grids.forEach((h: { grid: SensitivityGrid; chart: SvgChart }) =>
         b.push({ type: "chart", title: h.grid.title, chart: h.chart, caption: `Rows: ${h.grid.rowLabel}. Columns: ${h.grid.colLabel}.` }),
       );
+    const missing = charts.heatmaps.length - grids.length;
+    if (grids.length && missing > 0)
+      b.push({ type: "paragraph", tone: "muted", text: `${missing} further sensitivit${missing === 1 ? "y is" : "ies are"} not shown because the underlying method was not computed.` });
     sec("sensitivities", "Sensitivity analysis", b, true);
   }
 
@@ -852,10 +1200,10 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
     const srcById = new Map(ctx.sources.map((s) => [s.id, s]));
     const rows: TableRow[] = [];
     let lastSection = "";
-    for (const a of r.assumptions) {
+    for (const a of r.assumptions.filter((x) => x.relevant !== false)) {
       if (a.section !== lastSection) {
         lastSection = a.section;
-        rows.push({ cells: [SECTION_LABELS[a.section] ?? humanize(a.section), "", "", "", ""], style: "group" });
+        rows.push({ cells: [SECTION_LABELS[a.section] ?? EXTRA_SECTION_LABELS[a.section] ?? humanize(a.section), "", "", "", ""], style: "group" });
       }
       const s = a.sourceId ? srcById.get(a.sourceId) : undefined;
       const kind = CATALOGUE_BY_KEY[a.key]?.kind;
@@ -877,7 +1225,7 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
         style: a.value === null ? "muted" : undefined,
       });
     }
-    b.push({ type: "paragraph", text: "All assumptions used by the model, with their value, origin and source. Market data older than 30 days at the reference date is flagged as stale." });
+    b.push({ type: "paragraph", text: "All assumptions that apply to this profile, with their value, origin and source. Market data older than 30 days at the reference date is flagged as stale." });
     b.push({
       type: "table",
       small: true,

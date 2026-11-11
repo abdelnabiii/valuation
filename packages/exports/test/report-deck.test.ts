@@ -7,6 +7,9 @@ import { footballFieldSvg, heatmapSvg, paletteFromBranding, svgToPng } from "../
 import { renderDeck } from "../src/deck";
 import { buildReportModel, fmtAmount, fmtMoney, renderReportDocx, renderReportPdf } from "../src/report";
 import { sampleContext } from "../src/sample";
+import type { ExportContext } from "../src/context";
+import { handExample } from "../../engine/fixtures/hand-example";
+import { operatingExample, realEstateExample, startupExample } from "../../engine/fixtures/profile-examples";
 
 /** Set WRITE_PREVIEW=1 to write the rendered files to packages/exports/preview/. */
 const PREVIEW = process.env.WRITE_PREVIEW === "1";
@@ -156,4 +159,78 @@ describe("deck", () => {
     expect(text).toContain("does not apply a separate discount for lack of control");
     expect(text).toContain("Minority (basis)");
   });
+});
+
+/** sampleContext's narrative profile describes the F&B fixture; replace it with neutral (fictional) text for other profiles. */
+function exampleContext(name: string): ExportContext {
+  const input = name === "fnb" ? handExample : name === "operating" ? operatingExample() : name === "real_estate" ? realEstateExample() : startupExample();
+  const ctx = sampleContext(input);
+  if (name !== "fnb")
+    ctx.profile = {
+      description: `Fictional ${name.replace("_", " ")} company used for testing.`,
+      founded: "2022",
+      concept: null,
+      brandAssets: null,
+      growthPlan: "Grow revenue in line with the business plan (fictional)",
+      growthBudget: null,
+      pendingOffers: null,
+      kpis: [{ label: "Test indicator (fictional)", value: "42" }],
+    };
+  return ctx;
+}
+
+const EXAMPLES = ["fnb", "operating", "real_estate", "startup"] as const;
+const FNB_WORDS = ["coffee", "dine-in", "delivery apps", "outlet"];
+
+describe("industry profiles", () => {
+  for (const name of EXAMPLES) {
+    it(`renders docx, pdf and pptx for the ${name} example`, async () => {
+      const ctx = exampleContext(name);
+      const docx = await renderReportDocx(ctx);
+      expect(ascii(docx, 2)).toBe("PK");
+      const pdf = await renderReportPdf(ctx);
+      expect(ascii(pdf, 4)).toBe("%PDF");
+      preview(`report-${name}.pdf`, pdf);
+      preview(`report-${name}.docx`, docx);
+      const pptx = await renderDeck(ctx);
+      expect(ascii(pptx, 2)).toBe("PK");
+      preview(`deck-${name}.pptx`, pptx);
+      const zip = await JSZip.loadAsync(pptx);
+      expect(Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))).toHaveLength(9);
+
+      const text = await zipText(docx, "word/document.xml");
+      const lower = text.toLowerCase();
+      const slides = (await slidesText(pptx)).toLowerCase();
+      expect(text).toContain(fmtMoney(ctx.result.reconciliation.roundedMid));
+      if (name !== "fnb") {
+        for (const word of FNB_WORDS) {
+          expect(lower, `docx contains "${word}"`).not.toContain(word);
+          expect(slides, `deck contains "${word}"`).not.toContain(word);
+        }
+        expect(text).toContain("Industry indicators");
+        expect(text).toContain("Test indicator (fictional)");
+      }
+      if (name === "real_estate") {
+        expect(text).toContain("Net asset value");
+        expect(text).toContain("Income capitalisation");
+        expect(text).toContain("Appraisal (fictional)");
+      }
+      if (name === "startup") {
+        expect(text).toContain("Venture capital method");
+        expect(text).toContain("Scorecard method");
+        expect(text).toContain("Recent funding round");
+        expect(text).toContain("Equity value");
+        expect(text).not.toContain("Unit economics");
+        expect(slides).toContain("traction and plan");
+      }
+      if (name === "operating") {
+        expect(text).toContain("Revenue forecast");
+        expect(text).toContain("Real revenue growth");
+        expect(slides).toContain("financial profile");
+      }
+      if (name === "fnb") expect(text).toContain("Outlet economics");
+      // assumptions appendix lists only relevant assumptions
+      for (const a of ctx.result.assumptions.filter((x) => !x.relevant)) expect(text).not.toContain(a.label);
+    });
+  }
 });

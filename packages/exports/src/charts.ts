@@ -110,7 +110,7 @@ function niceStep(range: number, target: number): number {
 export function footballFieldSvg(result: EngineResult, palette: ChartPalette, opts: { width?: number } = {}): SvgChart {
   const rec = result.reconciliation;
   const W = opts.width ?? 900;
-  const labelW = 250;
+  const labelW = 280;
   const rightPad = 40;
   const top = 24;
   const rowH = 52;
@@ -121,12 +121,15 @@ export function footballFieldSvg(result: EngineResult, palette: ChartPalette, op
   const rows: Row[] = [];
   for (const m of rec.methods) {
     const w = `weight ${(m.weight * 100).toFixed(1)}%`;
-    if (m.method === "asset") {
-      rows.push({ label: m.label, sub: `Enterprise value, ${w}`, kind: "marker", low: m.low, mid: m.mid, high: m.high });
-    } else if (m.available) {
-      rows.push({ label: m.label, sub: `Enterprise value, ${w}`, kind: "bar", low: m.low, mid: m.mid, high: m.high });
+    const basis = m.basis === "equity" ? "Equity value as EV equivalent" : "Enterprise value";
+    const label = m.label.replace(/\s*\([^)]*\)\s*$/, "");
+    if (!m.available) {
+      rows.push({ label, sub: "Not computed", kind: "bar", low: 0, mid: 0, high: 0, dim: true });
+    } else if (m.method === "asset" || m.low === m.high) {
+      // single-point methods (asset floor, NAV, scorecard, funding round) are drawn as a marker
+      rows.push({ label, sub: `${basis}, ${w}`, kind: "marker", low: m.low, mid: m.mid, high: m.high });
     } else {
-      rows.push({ label: m.label, sub: "Not computed", kind: "bar", low: 0, mid: 0, high: 0, dim: true });
+      rows.push({ label, sub: `${basis}, ${w}`, kind: "bar", low: m.low, mid: m.mid, high: m.high });
     }
   }
   rows.push({ label: "Weighted enterprise value", sub: rec.floorApplied ? "After asset floor" : "Weighted by method", kind: "bar", low: rec.evLow, mid: rec.evMid, high: rec.evHigh });
@@ -216,11 +219,21 @@ function trimNum(v: number): string {
 export function sensitivityAxisLabel(gridKey: string, axis: "row" | "col", v: number): string {
   const sign = v > 0 ? "+" : v < 0 ? "-" : "";
   const a = Math.abs(v);
+  const pctChange = () => (v === 0 ? "Base" : `${sign}${(a * 100).toFixed(0)}%`);
   if (gridKey === "units_capex") {
     if (axis === "row") return v === 0 ? "Plan" : `${sign}${a} unit${a === 1 ? "" : "s"}`;
-    return v === 0 ? "Base" : `${sign}${(a * 100).toFixed(0)}%`;
+    return pctChange();
   }
+  if (gridKey === "exit_capex" && axis === "row") return v === 0 ? "Base" : `${sign}${trimNum(a)}x`;
+  if ((gridKey === "cap_noi" || gridKey === "vc_return_multiple") && axis === "col") return pctChange();
   return v === 0 ? "Base" : `${sign}${(a * 100).toFixed(1)} pp`;
+}
+
+/** What the heatmap cells measure, for the chart footnote. */
+export function sensitivityValueLabel(gridKey: string): string {
+  if (gridKey === "vc_return_multiple") return "Venture capital method equity value";
+  if (gridKey === "cap_noi") return "Income-capitalisation value";
+  return "Base-scenario DCF enterprise value";
 }
 
 export function heatmapSvg(grid: SensitivityGrid, palette: ChartPalette, opts: { width?: number } = {}): SvgChart {
@@ -241,7 +254,7 @@ export function heatmapSvg(grid: SensitivityGrid, palette: ChartPalette, opts: {
   const parts: string[] = [`<rect x="0" y="0" width="${W}" height="${H}" fill="#FFFFFF"/>`];
 
   if (!grid.values.length) {
-    parts.push(`<text x="${W / 2}" y="${H / 2}" font-size="14" fill="${sub}" text-anchor="middle">Sensitivity not available (DCF not computed)</text>`);
+    parts.push(`<text x="${W / 2}" y="${H / 2}" font-size="14" fill="${sub}" text-anchor="middle">Sensitivity not available (method not computed)</text>`);
     return { svg: wrapSvg(W, H, palette, parts.join("")), width: W, height: H };
   }
 
@@ -281,7 +294,7 @@ export function heatmapSvg(grid: SensitivityGrid, palette: ChartPalette, opts: {
   if (baseR >= 0 && baseC >= 0) {
     parts.push(`<rect x="${(x0 + baseC * cellW + 1.5).toFixed(1)}" y="${y0 + baseR * cellH + 1.5}" width="${(cellW - 3).toFixed(1)}" height="${cellH - 3}" fill="none" stroke="${palette.accent}" stroke-width="3"/>`);
   }
-  parts.push(`<text x="${x0}" y="${H - 10}" font-size="11.5" fill="${sub}">Base-scenario enterprise value, EGP millions. Outlined cell = base case.</text>`);
+  parts.push(`<text x="${x0}" y="${H - 10}" font-size="11.5" fill="${sub}">${esc(sensitivityValueLabel(grid.key))}, EGP millions. Outlined cell = base case.</text>`);
   return { svg: wrapSvg(W, H, palette, parts.join("")), width: W, height: H };
 }
 

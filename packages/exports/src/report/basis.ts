@@ -30,7 +30,7 @@ const PREMISES: Record<string, { name: string; definition: string }> = {
   going_concern: {
     name: "Going concern",
     definition:
-      "the business is assumed to keep trading, with its outlets, staff, brand and supplier relationships in place. Its value therefore comes mainly from the cash it is expected to generate in future.",
+      "the business is assumed to keep trading, with its operations, staff, brand, customer and supplier relationships in place. Its value therefore comes mainly from what it is expected to earn in future and, for asset-rich businesses, from the assets it uses.",
   },
   orderly_liquidation: {
     name: "Orderly liquidation",
@@ -46,7 +46,7 @@ const BASES: Record<string, { name: string; definition: string }> = {
   control: {
     name: "Control",
     definition:
-      "the value of an interest that can direct the business: appoint management, set pay and dividends, open or close outlets, borrow, and sell the company.",
+      "the value of an interest that can direct the business: appoint management, set pay and dividends, open or close sites, borrow, and sell the company.",
   },
   minority: {
     name: "Minority",
@@ -83,7 +83,7 @@ export function basisOfValueBlocks(ctx: ExportContext): Block[] {
   const effects: string[] = [];
   if (e.premise === "going_concern")
     effects.push(
-      "Because the business is valued as a going concern, the conclusion rests on forecast cash flows and market multiples. The asset-based floor (what the equipment, fit-out and inventory would fetch if sold) is shown only as a minimum; it sets the value only if the other methods fall below it.",
+      `Because the business is valued as a going concern, the conclusion rests on ${goingConcernBasis(ctx)}. The asset-based floor (what the equipment, fit-out and inventory would fetch if sold) is shown only as a minimum; it sets the value only if the other methods fall below it.`,
     );
   else
     effects.push(
@@ -115,4 +115,19 @@ export function basisOfValueBlocks(ctx: ExportContext): Block[] {
   b.push({ type: "heading", level: 3, text: "What this basis means for the number" });
   b.push({ type: "bullets", items: effects });
   return b;
+}
+
+/** Plain description of what the weighted methods rest on (from the reconciliation weights). */
+function goingConcernBasis(ctx: ExportContext): string {
+  const used = new Set(ctx.result.reconciliation.methods.filter((m) => m.weight > 0 && m.method !== "asset").map((m) => m.method));
+  const parts: string[] = [];
+  if (used.has("dcf")) parts.push("forecast cash flows");
+  if (used.has("multiples")) parts.push("market multiples");
+  if (used.has("nav")) parts.push("the market value of its assets");
+  if (used.has("income_cap")) parts.push("the capitalised income its assets produce");
+  if (used.has("vc")) parts.push("the expected exit value under the business plan");
+  if (used.has("scorecard")) parts.push("comparison with funded peers");
+  if (used.has("round")) parts.push("the price of its latest funding round");
+  if (!parts.length) return "the methods set out in the reconciliation";
+  return parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
