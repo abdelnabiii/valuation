@@ -9,6 +9,17 @@ import {
   SENS_RATE,
   SENS_SSS,
   SENS_UNITS,
+  SENS_EXIT,
+  SENS_CAPEX_PCT,
+  SENS_CAP_RATE,
+  SENS_NOI,
+  SENS_VC_RETURN,
+  SENS_VC_MULT,
+  SCORECARD_FACTORS,
+  CATALOGUE_BY_KEY,
+  getProfile,
+  weightKey,
+  type MethodKey,
   UNIT_COST_LINES,
   type ResolvedAssumption,
 } from "@valuation/engine";
@@ -155,7 +166,7 @@ export interface BlockParams {
   baseRevenue: string;
   baseMargin: string;
   inflation: string[];
-  sssReal: string;
+  growth: string[];
   marginDelta: string;
   marginShift: string;
   newUnits: string[];
@@ -233,7 +244,7 @@ function forecastBlock(s: SheetW, title: string, p: BlockParams): BlockRefs {
     const col = C(t);
     s.f(col, R["EGP inflation"]!, `=${p.inflation[t - 1]}`, FMT.pct);
     s.f(col, R["Price index"]!, `=${cell("Price index", t - 1)}*(1+${cell("EGP inflation", t)})`, FMT.factor);
-    s.f(col, R["Existing-unit revenue"]!, `=${cell("Existing-unit revenue", t - 1)}*(1+${p.sssReal})*(1+${cell("EGP inflation", t)})`, FMT.egp);
+    s.f(col, R["Existing-unit revenue"]!, `=${cell("Existing-unit revenue", t - 1)}*(1+${p.growth[t - 1]})*(1+${cell("EGP inflation", t)})`, FMT.egp);
     s.f(col, R["New units opened"]!, `=${p.newUnits[t - 1]}`, FMT.int);
     s.f(col, R["Cumulative new units"]!, `=${cell("Cumulative new units", t - 1)}+${cell("New units opened", t)}`, FMT.int);
     const openedPrev = t >= 2 ? cell("New units opened", t - 1) : "0";
@@ -335,6 +346,11 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   const dcfS = new SheetW(wb, "DCF", brand, [44, 16, 16, 16, 16, 16, 16]);
   const mu = new SheetW(wb, "Multiples", brand, [30, 12, 10, 12, 11, 11, 11, 9, 34, 11, 11, 11]);
   const af = new SheetW(wb, "Asset Floor", brand, [34, 16, 14, 16]);
+  const profile = getProfile(input.meta.profileKey);
+  const model = profile.model;
+  const navS = model === "asset_heavy" ? new SheetW(wb, "NAV", brand, [36, 18, 18, 18, 44]) : null;
+  const esS = model === "early_stage" ? new SheetW(wb, "Early Stage", brand, [44, 16, 16, 16, 16]) : null;
+  const pdef = (k: string): number => input.profileDefaults?.[k] ?? profile.defaults[k] ?? CATALOGUE_BY_KEY[k]?.default ?? 0;
   const adj = new SheetW(wb, "Adjustments", brand, [34, 14, 14, 70]);
   const rec = new SheetW(wb, "Reconciliation", brand, [36, 16, 16, 16, 12, 40]);
   const sen = new SheetW(wb, "Sensitivities", brand, [36, 16, 16, 16, 16, 16, 16]);
@@ -359,6 +375,14 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   meta("Inventory (book value)", input.operations.inventoryValue ?? null, FMT.egp, "I_Inventory");
   meta("Owner dependency score (1-5)", input.operations.ownerDependencyScore ?? null, FMT.int, "I_OwnerDep");
   meta("Imported share of COGS", input.operations.importedCogsShare ?? null, FMT.pct, "I_ImportShare");
+  meta("Largest customer, share of revenue", input.operations.topCustomerShare ?? null, FMT.pct, "I_TopCustomer");
+  meta("Industry profile", `${profile.label} (${model})`);
+  if (model === "early_stage") {
+    meta("Exit-year revenue (client plan)", input.earlyStage?.exitRevenue ?? null, FMT.egp, "I_ExitRevenue");
+    meta("Years to exit (client plan)", input.earlyStage?.exitYears ?? null, FMT.int, "I_ExitYears");
+    meta("Latest priced round: post-money", input.earlyStage?.lastRoundPostMoney ?? null, FMT.egp, "I_RoundPost");
+    meta("Latest priced round: date", input.earlyStage?.lastRoundDate ?? null, undefined);
+  }
   inp.blank();
 
   // Growth plan
@@ -369,7 +393,29 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
     const ref = inp.input(2 + y, inp.row, input.growthPlan.newUnitsByYear[y - 1] ?? 0, FMT.int);
     wb.definedNames.add(ref, `I_Plan_y${y}`);
   }
+  inp.row++;
+  inp.label(1, inp.row, "Planned nominal revenue growth (client plan)");
+  for (let y = 1; y <= 5; y++) {
+    const v = input.growthPlan.revenueGrowthNominal?.[y - 1];
+    const ref = inp.input(2 + y, inp.row, v === undefined ? null : v, FMT.pct);
+    wb.definedNames.add(ref, `I_PlanG_y${y}`);
+  }
   inp.row += 2;
+  if (model === "asset_heavy") {
+    inp.section("Assets at market value");
+    inp.header(["Asset", "Kind", "Market value", "Book value", "Valuation source"]);
+    const first = inp.row;
+    for (const a of input.navAssets ?? []) {
+      inp.input(1, inp.row, a.name);
+      inp.input(2, inp.row, a.kind);
+      inp.input(3, inp.row, a.marketValue, FMT.egp);
+      inp.input(4, inp.row, a.bookValue, FMT.egp);
+      inp.input(5, inp.row, a.sourceNote);
+      inp.row++;
+    }
+    wb.definedNames.add(`'Inputs'!$C$${first}:$C$${Math.max(first, inp.row - 1)}`, "I_NavMarket");
+    inp.row++;
+  }
 
   // Units table
   inp.section("Units: trailing twelve months");
@@ -651,6 +697,7 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
     "adj.lease_risk": `=IF(${wYears}="","",IF(${wYears}<2,0.075,IF(${wYears}<4,0.04,IF(${wYears}<6,0.02,0))))`,
     "adj.delivery": `=IF(${delivShare}>0.5,0.075,IF(${delivShare}>0.35,0.05,IF(${delivShare}>0.2,0.025,0)))`,
     "adj.fx": `=IF(I_ImportShare="","",IF(I_ImportShare>0.6,0.04,IF(I_ImportShare>0.3,0.02,IF(I_ImportShare>0,0.01,0))))`,
+    "adj.concentration": `=IF(I_TopCustomer="","",IF(I_TopCustomer>0.5,0.075,IF(I_TopCustomer>0.3,0.05,IF(I_TopCustomer>0.15,0.025,0))))`,
   };
   const adjRefs: string[] = [];
   result.adjustments.rows.forEach((a) => {
@@ -675,9 +722,28 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   for (const s of SCENARIOS)
     for (let y = 1; y <= 5; y++)
       derivedFormula[`dcf.${s}.new_units_y${y}`] = s === "downside" ? `INT(I_Plan_y${y}/2)` : `I_Plan_y${y}`;
-  derivedFormula["rec.w_dcf"] = "IF(I_Months<36,0.7,0.5)";
-  derivedFormula["rec.w_multiples"] = "IF(I_Months<36,0.3,0.5)";
-  derivedFormula["rec.w_asset"] = "0";
+  {
+    const d = pdef(weightKey("dcf"));
+    const mm = pdef(weightKey("multiples"));
+    for (const mk of ["dcf", "multiples", "asset", "nav", "income_cap", "vc", "scorecard", "round"] as MethodKey[]) {
+      const dv = pdef(weightKey(mk));
+      derivedFormula[weightKey(mk)] =
+        profile.youngRule && (mk === "dcf" || mk === "multiples")
+          ? `IF(I_Months<36,${mk === "dcf" ? `${d}+0.4*${mm}` : `0.6*${mm}`},${dv})`
+          : `${dv}`;
+    }
+    for (const sc of SCENARIOS)
+      for (let y = 1; y <= 5; y++) {
+        const adjS = sc === "base" ? "" : sc === "upside" ? "+0.02" : "-0.04";
+        derivedFormula[`dcf.${sc}.growth_y${y}`] = `(1+I_PlanG_y${y})/(1+${nm(`macro.egp_inflation_y${y}`)})-1${adjS}`;
+      }
+    if (model === "early_stage") {
+      derivedFormula["vc.exit_revenue"] = "I_ExitRevenue";
+      derivedFormula["vc.exit_years"] = "I_ExitYears";
+      derivedFormula["round.post_money"] = "I_RoundPost";
+      derivedFormula["vc.exit_multiple"] = mu.ref(4, mRows[1]!);
+    }
+  }
 
   /* Now fill the Inputs assumptions table */
   for (const e of CATALOGUE) {
@@ -769,7 +835,7 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
     baseRevenue: "N_Revenue",
     baseMargin: "N_NormMargin",
     inflation: [1, 2, 3, 4, 5].map((y) => nm(`macro.egp_inflation_y${y}`)),
-    sssReal: nm(`dcf.${s}.sss_real`),
+    growth: [1, 2, 3, 4, 5].map((y) => (model === "units" ? nm(`dcf.${s}.sss_real`) : nm(`dcf.${s}.growth_y${y}`))),
     marginDelta: nm(`dcf.${s}.margin_delta`),
     marginShift: "0",
     newUnits: [1, 2, 3, 4, 5].map((y) => nm(`dcf.${s}.new_units_y${y}`)),
@@ -882,6 +948,102 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   af.row++;
   checks["assetFloor.floor"] = floor;
 
+  /* ---------------- NAV & income capitalisation (asset-heavy) ---------------- */
+  let navTotal = "0";
+  let icAvail = "FALSE";
+  let icRefs: [string, string, string] = ["0", "0", "0"];
+  if (navS) {
+    navS.title("NAV", "Net asset value at market value, and income capitalisation of normalized earnings.");
+    navS.freeze(3, 1);
+    navS.section("Assets at market value (from Inputs)");
+    navS.label(1, navS.row, "Total market value of assets", { bold: true });
+    navTotal = navS.f(2, navS.row, "=SUM(I_NavMarket)", FMT.egp, true);
+    navS.row += 2;
+    checks["nav.totalMarketValue"] = navTotal;
+    navS.section("Income capitalisation");
+    const kv2 = (label: string, f: string, fmt: string, bold = false) => {
+      navS.label(1, navS.row, label, { bold });
+      const r = navS.f(2, navS.row, f, fmt, bold);
+      navS.row++;
+      return r;
+    };
+    const noi = kv2("Net operating income (normalized EBITDA)", "=N_NormEbitda", FMT.egp);
+    const cap = kv2("Cap rate", `=${nm("nav.cap_rate")}`, FMT.pct);
+    const spr = kv2("Cap rate range (± pp)", `=${nm("nav.cap_rate_spread")}`, FMT.pct);
+    icAvail = kv2("Available (cap rate and earnings positive)", `=AND(${cap}>0,${cap}-${spr}>0,${noi}>0)`, "General");
+    const lo = kv2("Value at cap rate + range (low)", `=IF(${icAvail},${noi}/(${cap}+${spr}),0)`, FMT.egp);
+    const mi = kv2("Value at cap rate (mid)", `=IF(${icAvail},${noi}/${cap},0)`, FMT.egp, true);
+    const hi = kv2("Value at cap rate - range (high)", `=IF(${icAvail},${noi}/(${cap}-${spr}),0)`, FMT.egp);
+    icRefs = [lo, mi, hi];
+    checks["nav.incomeCap.low"] = lo;
+    checks["nav.incomeCap.mid"] = mi;
+    checks["nav.incomeCap.high"] = hi;
+  }
+
+  /* ---------------- Early-stage methods ---------------- */
+  let vcAvail = "FALSE";
+  let vcRefs: [string, string, string] = ["0", "0", "0"];
+  let vcMid = "0";
+  let scValue = "0";
+  let scAvail = "FALSE";
+  let roundValue = "0";
+  let roundAvail = "FALSE";
+  let vcParts: { rev: string; mult: string; ret: string; r: string; years: string } | null = null;
+  if (esS) {
+    esS.title("Early Stage", "Venture capital method, scorecard method and recent funding round. Results are equity values.");
+    esS.freeze(3, 1);
+    const kv3 = (label: string, f: string, fmt: string, bold = false) => {
+      esS.label(1, esS.row, label, { bold });
+      const r = esS.f(2, esS.row, f, fmt, bold);
+      esS.row++;
+      return r;
+    };
+    esS.section("Venture capital method");
+    const rev = kv3("Exit-year revenue", `=${nm("vc.exit_revenue")}`, FMT.egp);
+    const years = kv3("Years to exit", `=${nm("vc.exit_years")}`, FMT.int);
+    const mult = kv3("Exit EV/Revenue multiple (mid)", `=${nm("vc.exit_multiple")}`, FMT.x);
+    const q1 = `'Multiples'!$C$${mRows[1]}`;
+    const q3 = `'Multiples'!$E$${mRows[1]}`;
+    const mLo = kv3("Exit multiple, low (comparables Q1)", `=IF(ISNUMBER(${q1}),${q1},${mult})`, FMT.x);
+    const mHi = kv3("Exit multiple, high (comparables Q3)", `=IF(ISNUMBER(${q3}),${q3},${mult})`, FMT.x);
+    const r = kv3("Target investor return", `=${nm("vc.target_return")}`, FMT.pct);
+    const ret = kv3("Retention after future dilution", `=${nm("vc.retention")}`, FMT.pct);
+    vcAvail = kv3("Available", `=AND(${rev}>0,ISNUMBER(${mult}),${mult}>0,${years}>0)`, "General");
+    const v = (m: string) => `=IF(${vcAvail},${rev}*${m}*${ret}/(1+${r})^${years},0)`;
+    const lo = kv3("Equity value today, low", v(mLo), FMT.egp);
+    vcMid = kv3("Equity value today, mid", v(mult), FMT.egp, true);
+    const hi = kv3("Equity value today, high", v(mHi), FMT.egp);
+    vcRefs = [lo, vcMid, hi];
+    vcParts = { rev, mult, ret, r, years };
+    checks["earlyStage.vc.low"] = lo;
+    checks["earlyStage.vc.mid"] = vcMid;
+    checks["earlyStage.vc.high"] = hi;
+    esS.row++;
+    esS.section("Scorecard method");
+    const base = kv3("Median pre-money of comparable funded startups", `=${nm("sc.base_premoney")}`, FMT.egp);
+    esS.header(["Factor", "Weight", "Score", "Weight x score"]);
+    const prods: string[] = [];
+    for (const k of SCORECARD_FACTORS) {
+      const rr = esS.row;
+      esS.label(1, rr, CATALOGUE_BY_KEY[`sc.w_${k}`]!.label.replace("Scorecard weight: ", ""));
+      esS.f(2, rr, `=${nm(`sc.w_${k}`)}`, FMT.pct);
+      esS.f(3, rr, `=${nm(`sc.s_${k}`)}`, FMT.pct);
+      prods.push(esS.f(4, rr, `=B${rr}*C${rr}`, FMT.factor));
+      esS.row++;
+    }
+    const mlt = kv3("Multiplier (sum of weight x score)", `=${prods.join("+")}`, FMT.factor);
+    scAvail = `AND(ISNUMBER(${base}),${base}>0)`;
+    scValue = kv3("Scorecard equity value", `=IF(${scAvail},${base}*${mlt},0)`, FMT.egp, true);
+    checks["earlyStage.scorecard.value"] = scValue;
+    esS.row++;
+    esS.section("Recent funding round");
+    const post = kv3("Post-money of the latest priced round", `=${nm("round.post_money")}`, FMT.egp);
+    const radj = kv3("Change in value since the round", `=${nm("round.adjustment")}`, FMT.pct);
+    roundAvail = `AND(ISNUMBER(${post}),${post}>0)`;
+    roundValue = kv3("Funding-round equity value", `=IF(${roundAvail},${post}*(1+${radj}),0)`, FMT.egp, true);
+    checks["earlyStage.round.value"] = roundValue;
+  }
+
   /* ---------------- Reconciliation ---------------- */
   rec.title("Reconciliation", "Weighted enterprise value, floor test, equity bridge and adjustments.");
   rec.freeze(3, 1);
@@ -912,41 +1074,6 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   const multAvail = rec.f(2, rec.row, `=${tw}>0`);
   rec.row += 2;
 
-  rec.section("Methods");
-  const mHdr = rec.header(["Method", "Low", "Mid", "High", "Weight", "Note"]);
-  const methodRows: number[] = [];
-  const addMethod = (label: string, avail: string, low: string, mid: string, high: string, w: string, note: string) => {
-    const r = rec.row;
-    methodRows.push(r);
-    rec.label(1, r, label);
-    rec.f(2, r, `=IF(${avail},${low},0)`, FMT.egp0);
-    rec.f(3, r, `=IF(${avail},${mid},0)`, FMT.egp0);
-    rec.f(4, r, `=IF(${avail},${high},0)`, FMT.egp0);
-    rec.f(7, r, `=IF(${avail},${w},0)`, FMT.pct); // raw weight (helper)
-    rec.label(6, r, note, { italic: true });
-    rec.row++;
-  };
-  addMethod("Discounted cash flow", dcfAvail, blocks.downside!.ev, dcfW, blocks.upside!.ev, nm("rec.w_dcf"), "Low = downside, mid = probability-weighted, high = upside");
-  addMethod("Market multiples", multAvail, mLow, mMid, mHigh, nm("rec.w_multiples"), "Low = Q1, mid = selected, high = Q3");
-  addMethod("Asset-based floor", "TRUE", floor, floor, floor, nm("rec.w_asset"), "Orderly liquidation");
-  rec.ws.getCell(mHdr, 7).value = "Raw weight";
-  const twRec = `(${methodRows.map((r) => `G${r}`).join("+")})`;
-  for (const r of methodRows) rec.f(5, r, `=IF(${twRec}>0,G${r}/${twRec},0)`, FMT.pct);
-  rec.label(1, rec.row, result.reconciliation.weightsRationale, { italic: true });
-  rec.row += 2;
-
-  const agg = (col: string) => `=${methodRows.map((r) => `E${r}*${col}${r}`).join("+")}`;
-  rec.header(["", "Low", "Mid", "High"]);
-  const line = (label: string, fs: [string, string, string], fmt = FMT.egp, bold = false) => {
-    const r = rec.row;
-    rec.label(1, r, label, { bold });
-    const refs = fs.map((f, i) => rec.f(2 + i, r, f, fmt, bold));
-    rec.row++;
-    return { r, refs };
-  };
-  const raw = line("Weighted enterprise value (before floor)", [agg("B"), agg("C"), agg("D")]);
-  const ev = line("Enterprise value (floored at asset value)", [0, 1, 2].map((i) => `=MAX(${raw.refs[i]},${floor})`) as [string, string, string], FMT.egp, true);
-  rec.blank();
   rec.section("Equity bridge");
   rec.header(["Item", "Balance", "Currency", "EGP", "Sign"]);
   const bRows: number[] = [];
@@ -964,7 +1091,61 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   const net = rec.f(4, rec.row, bRows.length ? `=${bRows.map((r) => `E${r}*D${r}`).join("+")}` : "=0", FMT.egp, true);
   rec.row += 2;
   checks["bridge.netAdjustment"] = net;
+
+  rec.section("Methods");
+  const mHdr = rec.header(["Method", "Low (EV)", "Mid (EV)", "High (EV)", "Weight", "Note", "Raw weight", "Own low", "Own mid", "Own high"]);
+  void mHdr;
+  const methodRows: number[] = [];
+  const nativeOf = (mk: string): { avail: string; lo: string; mi: string; hi: string; note: string } => {
+    switch (mk) {
+      case "dcf":
+        return { avail: dcfAvail, lo: blocks.downside!.ev, mi: dcfW, hi: blocks.upside!.ev, note: "Low = downside, mid = probability-weighted, high = upside" };
+      case "multiples":
+        return { avail: multAvail, lo: mLow, mi: mMid, hi: mHigh, note: "Low = Q1, mid = selected, high = Q3" };
+      case "asset":
+        return { avail: "TRUE", lo: floor, mi: floor, hi: floor, note: "Orderly liquidation" };
+      case "nav":
+        return { avail: `${navTotal}>0`, lo: navTotal, mi: navTotal, hi: navTotal, note: "Assets at market value" };
+      case "income_cap":
+        return { avail: icAvail, lo: icRefs[0], mi: icRefs[1], hi: icRefs[2], note: "NOI / cap rate" };
+      case "vc":
+        return { avail: vcAvail, lo: vcRefs[0], mi: vcRefs[1], hi: vcRefs[2], note: "Equity value; EV-equivalent = equity less net debt" };
+      case "scorecard":
+        return { avail: scAvail, lo: scValue, mi: scValue, hi: scValue, note: "Equity value" };
+      default:
+        return { avail: roundAvail, lo: roundValue, mi: roundValue, hi: roundValue, note: "Equity value" };
+    }
+  };
+  for (const m of result.reconciliation.methods) {
+    const r = rec.row;
+    methodRows.push(r);
+    const n = nativeOf(m.method);
+    const eq = m.basis === "equity";
+    rec.label(1, r, m.label);
+    rec.f(8, r, `=IF(${n.avail},${n.lo},0)`, FMT.egp0);
+    rec.f(9, r, `=IF(${n.avail},${n.mi},0)`, FMT.egp0);
+    rec.f(10, r, `=IF(${n.avail},${n.hi},0)`, FMT.egp0);
+    for (const [c, nc] of [[2, "H"], [3, "I"], [4, "J"]] as const) rec.f(c, r, eq ? `=IF(${n.avail},${nc}${r}-${net},0)` : `=${nc}${r}`, FMT.egp0);
+    rec.f(7, r, `=IF(${n.avail},${nm(weightKey(m.method as MethodKey))},0)`, FMT.pct);
+    rec.label(6, r, n.note, { italic: true });
+    rec.row++;
+  }
+  const twRec = `(${methodRows.map((r) => `G${r}`).join("+")})`;
+  for (const r of methodRows) rec.f(5, r, `=IF(${twRec}>0,G${r}/${twRec},0)`, FMT.pct);
+  rec.label(1, rec.row, result.reconciliation.weightsRationale, { italic: true });
+  rec.row += 2;
+
+  const agg = (col: string) => `=${methodRows.map((r) => `E${r}*${col}${r}`).join("+")}`;
   rec.header(["", "Low", "Mid", "High"]);
+  const line = (label: string, fs: [string, string, string], fmt = FMT.egp, bold = false) => {
+    const r = rec.row;
+    rec.label(1, r, label, { bold });
+    const refs = fs.map((f, i) => rec.f(2 + i, r, f, fmt, bold));
+    rec.row++;
+    return { r, refs };
+  };
+  const raw = line("Weighted enterprise value (before floor)", [agg("B"), agg("C"), agg("D")]);
+  const ev = line("Enterprise value (floored at asset value)", [0, 1, 2].map((i) => `=MAX(${raw.refs[i]},${floor})`) as [string, string, string], FMT.egp, true);
   const eq = line("Equity value", [0, 1, 2].map((i) => `=${ev.refs[i]}+${net}`) as [string, string, string]);
   const ad = line("After adjustments", [0, 1, 2].map((i) => `=${eq.refs[i]}*${factor}`) as [string, string, string]);
   const rd = nm("rec.rounding");
@@ -977,6 +1158,7 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   line("Value range, USD at spot", [0, 1, 2].map((i) => `=IF(${nm("macro.fx_usd_egp")}>0,${rnd.refs[i]}/${nm("macro.fx_usd_egp")},0)`) as [string, string, string], FMT.egp0);
   ["Low", "Mid", "High"].forEach((k, i) => {
     checks[`reconciliation.ev${k}`] = ev.refs[i]!;
+    checks[`reconciliation.equity${k}`] = eq.refs[i]!;
     checks[`reconciliation.adjusted${k}`] = ad.refs[i]!;
     checks[`reconciliation.rounded${k}`] = rnd.refs[i]!;
   });
@@ -999,11 +1181,20 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
   /* ---------------- Sensitivities ---------------- */
   sen.title("Sensitivities", "Base-scenario enterprise value (EGP). Each cell is recomputed in full in the workings below.");
   sen.freeze(3, 1);
-  const grids = [
-    { key: "rate_growth", title: "Discount rate (rows) vs terminal real growth (columns)", rows: SENS_RATE, cols: SENS_GROWTH, rf: FMT.pct, cf: FMT.pct },
-    { key: "margin_sss", title: "EBITDA margin shift (rows) vs real same-store sales shift (columns)", rows: SENS_MARGIN, cols: SENS_SSS, rf: FMT.pct, cf: FMT.pct },
-    { key: "units_capex", title: "New units per year change (rows) vs capex per unit change (columns)", rows: SENS_UNITS, cols: SENS_CAPEX, rf: '+0;-0;0', cf: FMT.pct },
-  ];
+  type GridDef = { key: string; title: string; rows: number[]; cols: number[]; rf: string; cf: string };
+  const grids: GridDef[] =
+    model === "early_stage"
+      ? [{ key: "vc_return_multiple", title: "VC method: target return shift (rows) vs exit multiple change (columns), equity value", rows: SENS_VC_RETURN, cols: SENS_VC_MULT, rf: FMT.pct, cf: FMT.pct }]
+      : [
+          { key: "rate_growth", title: "Discount rate (rows) vs terminal real growth (columns)", rows: SENS_RATE, cols: SENS_GROWTH, rf: FMT.pct, cf: FMT.pct },
+          { key: "margin_sss", title: model === "units" ? "EBITDA margin shift (rows) vs real same-store sales shift (columns)" : "EBITDA margin shift (rows) vs real revenue growth shift (columns)", rows: SENS_MARGIN, cols: SENS_SSS, rf: FMT.pct, cf: FMT.pct },
+          model === "units"
+            ? { key: "units_capex", title: "New units per year change (rows) vs capex per unit change (columns)", rows: SENS_UNITS, cols: SENS_CAPEX, rf: "+0;-0;0", cf: FMT.pct }
+            : model === "asset_heavy"
+              ? { key: "cap_noi", title: "Income capitalisation: cap rate shift (rows) vs NOI change (columns)", rows: SENS_CAP_RATE, cols: SENS_NOI, rf: FMT.pct, cf: FMT.pct }
+              : { key: "exit_capex", title: "Exit EV/EBITDA shift (rows) vs capex % of revenue shift (columns)", rows: SENS_EXIT, cols: SENS_CAPEX_PCT, rf: '+0.0"x";-0.0"x";0"x"', cf: FMT.pct },
+        ];
+  const centreOf = (key: string) => (key === "vc_return_multiple" ? vcMid : key === "cap_noi" ? icRefs[1] : blocks.base!.ev);
   const gridPos: { key: string; top: number; rowRefs: string[]; colRefs: string[]; cellRow: number }[] = [];
   for (const g of grids) {
     sen.section(g.title);
@@ -1017,36 +1208,48 @@ export async function buildWorkbook(ctx: ExportContext): Promise<{ buffer: Uint8
       sen.row++;
     });
     gridPos.push({ key: g.key, top, rowRefs, colRefs, cellRow: top + 1 });
-    sen.label(1, sen.row, "Check: centre cell less base EV (should be 0.00)", { italic: true });
-    sen.f(2, sen.row, `=${colL(4)}${top + 3}-${blocks.base!.ev}`, FMT.egp);
+    sen.label(1, sen.row, "Check: centre cell less the method value (should be 0.00)", { italic: true });
+    sen.f(2, sen.row, `=${colL(4)}${top + 3}-${centreOf(g.key)}`, FMT.egp);
     sen.row += 2;
   }
   sen.section("Workings");
   const wStart = sen.row;
   const bp = baseParams("base");
+  const nopFmt = { name: "Calibri", size: 10, color: { argb: BLACK } };
   for (const [gi, g] of grids.entries()) {
     const pos = gridPos[gi]!;
     g.rows.forEach((_, i) => {
       g.cols.forEach((__, j) => {
         const rr = pos.rowRefs[i]!;
         const cc = pos.colRefs[j]!;
-        const p: BlockParams = { ...bp };
-        if (g.key === "rate_growth") {
-          p.rates = bp.rates.map((x) => `(${x}+${rr})`);
-          p.terminalRate = `(${bp.terminalRate}+${rr})`;
-          p.gRealLt = `(${bp.gRealLt}+${cc})`;
-        } else if (g.key === "margin_sss") {
-          p.marginShift = rr;
-          p.sssReal = `(${bp.sssReal}+${cc})`;
+        let formula: string;
+        if (g.key === "vc_return_multiple") {
+          const v = vcParts!;
+          formula = `IF(${vcAvail},${v.rev}*(${v.mult}*(1+${cc}))*${v.ret}/(1+(${v.r}+${rr}))^${v.years},0)`;
+        } else if (g.key === "cap_noi") {
+          formula = `IF(${icAvail},(N_NormEbitda*(1+${cc}))/(${nm("nav.cap_rate")}+${rr}),0)`;
         } else {
-          p.newUnits = bp.newUnits.map((n) => `MAX(0,${n}+${rr})`);
-          p.capexPerUnit = `(${bp.capexPerUnit}*(1+${cc}))`;
+          const p: BlockParams = { ...bp };
+          if (g.key === "rate_growth") {
+            p.rates = bp.rates.map((x) => `(${x}+${rr})`);
+            p.terminalRate = `(${bp.terminalRate}+${rr})`;
+            p.gRealLt = `(${bp.gRealLt}+${cc})`;
+          } else if (g.key === "margin_sss") {
+            p.marginShift = rr;
+            p.growth = bp.growth.map((x) => `(${x}+${cc})`);
+          } else if (g.key === "units_capex") {
+            p.newUnits = bp.newUnits.map((n) => `MAX(0,${n}+${rr})`);
+            p.capexPerUnit = `(${bp.capexPerUnit}*(1+${cc}))`;
+          } else {
+            p.exitMultiple = `(${bp.exitMultiple}+${rr})`;
+            p.maintCapexPct = `(${bp.maintCapexPct}+${cc})`;
+          }
+          formula = forecastBlock(sen, `${g.key}: row ${i + 1}, column ${j + 1}`, p).ev;
         }
-        const b = forecastBlock(sen, `${g.key}: row ${i + 1}, column ${j + 1}`, p);
         const c = sen.ws.getCell(pos.cellRow + i, 2 + j);
-        c.value = { formula: b.ev } as ExcelJS.CellFormulaValue;
+        c.value = { formula } as ExcelJS.CellFormulaValue;
         c.numFmt = FMT.egp0;
-        c.font = { name: "Calibri", size: 10, color: { argb: BLACK }, bold: i === 2 && j === 2 };
+        c.font = { ...nopFmt, bold: i === 2 && j === 2 };
         checks[`sensitivities.${gi}.values.${i}.${j}`] = abs("Sensitivities", 2 + j, pos.cellRow + i);
       });
     });

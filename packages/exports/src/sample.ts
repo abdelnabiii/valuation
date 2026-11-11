@@ -1,10 +1,11 @@
+import type { EngineInput } from "@valuation/engine";
 import { runValuation } from "@valuation/engine";
 import { handExample } from "../../engine/fixtures/hand-example";
 import type { ExportContext } from "./context";
 
 /** Fictional context used by tests and local previews. */
-export function sampleContext(): ExportContext {
-  const input = structuredClone(handExample);
+export function sampleContext(base: EngineInput = handExample): ExportContext {
+  const input = structuredClone(base);
   return {
     runId: "00000000-0000-0000-0000-000000000000",
     generatedAt: "2026-01-05T10:00:00Z",
